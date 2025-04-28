@@ -1,60 +1,94 @@
 #include <iostream>
 #include <vector>
+#include <map>
+#include <string>
+#include <sstream>
+#include <fstream>
 #include <mpi.h>
 
+using namespace std;
+
+class Graph {
+private:
+    map<int, vector<int>> adjList;
+    int numVertices;
+    int numEdges;
+
+public:
+    Graph() {
+        numVertices = 0;
+        numEdges = 0;
+    }
+
+    void loadGraphFromFile(string fileName) {
+        ifstream file(fileName);
+        if (!file.is_open()) {
+            cerr << "Error opening file: " << fileName << endl;
+            return;
+        }
+    
+        string line;
+        while (getline(file, line)) {
+            // Skip comment lines
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+    
+            int u, v;
+            istringstream iss(line);
+            if (!(iss >> u >> v)) {
+                continue;
+            }
+    
+            adjList[u + 1].push_back(v + 1);
+            adjList[v + 1].push_back(u + 1);
+            numEdges++;
+        }
+    
+        numVertices = adjList.size();
+        file.close();
+    }        
+
+    void convertGraphToMetisGraph() {
+        ofstream outfile("../metis_graph/output.graph");
+        if (!outfile.is_open()) {
+            cerr << "Error opening output file!" << endl;
+            return;
+        }
+    
+        outfile << numVertices << " " << numEdges / 2 << endl;
+    
+        for (int i = 1; i <= numVertices; ++i) {
+            if (adjList.find(i) != adjList.end()) {
+                for (auto neighbor : adjList[i]) {
+                    outfile << neighbor << " ";
+                }
+            }
+            outfile << endl;
+        }
+    
+        outfile.close();
+    }     
+    
+    void displayGraph() {
+        cout << "Number of vertices: " << numVertices << endl;
+        cout << "Number of edges: " << numEdges / 2 << endl;
+    }
+};
+
 int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);  // Initialize MPI
+    Graph graph;
+    graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
+    graph.convertGraphToMetisGraph();
+    graph.displayGraph();
+
+    MPI_Init(&argc, &argv);
 
     int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);  // Get current process rank
-    MPI_Comm_size(MPI_COMM_WORLD, &size);  // Get total processes
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const int array_size = 100;  // Total elements
-    std::vector<int> global_array;
+    MPI_Finalize();
 
-    // Root process initializes the full array
-    if (rank == 0) {
-        global_array.resize(array_size);
-        for (int i = 0; i < array_size; ++i) {
-            global_array[i] = i + 1;  // Fill with 1, 2, ..., 100
-        }
-    }
-
-    // Determine chunk size per process
-    int chunk_size = array_size / size;
-    std::vector<int> local_array(chunk_size);
-
-    // Scatter the array to all processes
-    MPI_Scatter(
-        global_array.data(), chunk_size, MPI_INT,  // Send buffer
-        local_array.data(), chunk_size, MPI_INT,   // Receive buffer
-        0, MPI_COMM_WORLD                         // Root process
-    );
-
-    // Compute local sum
-    int local_sum = 0;
-    for (int num : local_array) {
-        local_sum += num;
-    }
-    std::cout << "Process " << rank << " local sum: " << local_sum << std::endl;
-
-    // Gather all partial sums at root
-    std::vector<int> all_sums(size);
-    MPI_Gather(
-        &local_sum, 1, MPI_INT,        // Send local sum
-        all_sums.data(), 1, MPI_INT,   // Receive all sums
-        0, MPI_COMM_WORLD              // Root process
-    );
-
-    // Root computes the final sum
-    if (rank == 0) {
-        int total_sum = 0;
-        for (int sum : all_sums) {
-            total_sum += sum;
-        }
-        std::cout << "Total sum: " << total_sum << std::endl;
-    }
-
-    MPI_Finalize();  // Clean up MPI
     return 0;
 }

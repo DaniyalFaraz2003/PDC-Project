@@ -1,18 +1,22 @@
+# Compiler
 MPICXX := mpic++
 
-SRC := main.cpp
+# Source files and executable
+SRCS := main.cpp
 EXEC := mpi_program
 
+# Compiler flags
 CXXFLAGS := -Wall -O3 -std=c++11
 
+# Default number of processes
 PROCS ?= 4
 
 .PHONY: all clean run
 
 all: $(EXEC)
 
-$(EXEC): $(SRC)
-	$(MPICXX) $(CXXFLAGS) $< -o $@
+$(EXEC): $(SRCS)
+	$(MPICXX) $(CXXFLAGS) $^ -o $@
 
 run: $(EXEC)
 	mpirun -np $(PROCS) ./$(EXEC)
