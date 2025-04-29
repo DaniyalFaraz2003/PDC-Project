@@ -8,9 +8,17 @@
 
 using namespace std;
 
+struct Vertex {
+    int id;
+    int partitionId;
+    vector<Vertex> neighbors;
+};
+
 class Graph {
 private:
     map<int, vector<int>> adjList;
+    map<int, int> vertexPartition;
+    vector<Vertex> listOfVertices;
     int numVertices;
     int numEdges;
 
@@ -68,6 +76,9 @@ public:
         }
     
         outfile.close();
+
+        // Clear the adjList to free memory
+        adjList.clear();
     }    
     
     void applyMetisPartitioning() {
@@ -112,6 +123,9 @@ public:
     
             // Writing "partition vertex neighbors" in merged_file
             outFile << partition << " " << vertexIndex << " " << line << endl;
+
+            // Writing "vertex partition" in vertexPartition map
+            vertexPartition[vertexIndex] = partition;
     
             vertexIndex++;
         }
@@ -121,6 +135,64 @@ public:
         outFile.close();
     
         cout << "Merged file written to: " << mergedFile << endl;
+    }
+
+    void buildListOfVertices() {
+        string file = "../metis_graph/merged_file.graph";
+        ifstream inFile(file);
+    
+        if (!inFile.is_open()) {
+            cerr << "Error opening file: " << file << endl;
+            return;
+        }
+    
+        string line;
+        while (getline(inFile, line)) {
+            istringstream iss(line);
+            int partition, vertexId;
+            iss >> partition >> vertexId;
+    
+            Vertex vertex;
+            vertex.id = vertexId;
+            vertex.partitionId = partition;
+    
+            int neighborId;
+            while (iss >> neighborId) {
+                Vertex neighbor;
+                neighbor.id = neighborId;
+                neighbor.partitionId = vertexPartition[neighborId]; // using your partition map
+                vertex.neighbors.push_back(neighbor);
+            }
+    
+            listOfVertices.push_back(vertex);
+        }
+    
+        inFile.close();
+    
+        cout << "Vertex list constructed with " << listOfVertices.size() << " vertices." << endl;
+    }
+    
+    void displayVertexList() {
+        cout << "\n--- Displaying First 10 Vertices ---\n";
+        cout << "Partition | Vertex ID | Neighbors\n";
+        cout << "--------------------------------------------\n";
+    
+        int count = 0;
+        for (const auto& vertex : listOfVertices) {
+            if (count >= 10) break;
+    
+            cout << "    " << vertex.partitionId
+                 << "     |     " << vertex.id << "     | ";
+    
+            for (const auto& neighbor : vertex.neighbors) {
+                cout << neighbor.id << " ";
+            }
+            cout << endl;
+    
+            count++;
+        }
+    
+        cout << "--------------------------------------------\n";
     }    
     
     void displayGraph() {
@@ -135,7 +207,8 @@ int main(int argc, char** argv) {
     graph.convertGraphToMetisGraph();
     graph.applyMetisPartitioning();
     graph.mergeOutputGraphs();
-    graph.displayGraph();
+    graph.buildListOfVertices();
+    graph.displayVertexList();
 
     // MPI_Init(&argc, &argv);
 
