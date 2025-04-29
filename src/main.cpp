@@ -4,7 +4,7 @@
 #include <string>
 #include <sstream>
 #include <fstream>
-#include <mpi.h>
+// #include <mpi.h>
 
 using namespace std;
 
@@ -56,7 +56,7 @@ public:
             return;
         }
     
-        outfile << numVertices << " " << numEdges / 2 << endl;
+        outfile << numVertices << " " << numEdges << endl;
     
         for (int i = 1; i <= numVertices; ++i) {
             if (adjList.find(i) != adjList.end()) {
@@ -68,7 +68,18 @@ public:
         }
     
         outfile.close();
-    }     
+    }    
+    
+    void applyMetisPartitioning() {
+        string fileName = "../metis_graph/output.graph";
+        string command = "gpmetis " + fileName + " 2";
+        int result = system(command.c_str());
+        if (result != 0) {
+            cerr << "Error running gpmetis!" << endl;
+            return;
+        }
+        cout << "Graph partitioning completed." << endl;
+    }
     
     void displayGraph() {
         cout << "Number of vertices: " << numVertices << endl;
@@ -80,15 +91,16 @@ int main(int argc, char** argv) {
     Graph graph;
     graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
     graph.convertGraphToMetisGraph();
+    graph.applyMetisPartitioning();
     graph.displayGraph();
 
-    MPI_Init(&argc, &argv);
+    // MPI_Init(&argc, &argv);
 
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    // int rank, size;
+    // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    // MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    MPI_Finalize();
+    // MPI_Finalize();
 
     return 0;
 }
