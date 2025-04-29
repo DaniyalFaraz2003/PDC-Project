@@ -80,6 +80,48 @@ public:
         }
         cout << "Graph partitioning completed." << endl;
     }
+
+    void mergeOutputGraphs() {
+        string file1 = "../metis_graph/output.graph";
+        string file2 = "../metis_graph/output.graph.part.2";
+        string mergedFile = "../metis_graph/merged_file.graph";
+    
+        ifstream inFile1(file1);
+        ifstream inFile2(file2);
+        ofstream outFile(mergedFile);
+    
+        if (!inFile1.is_open() || !inFile2.is_open() || !outFile.is_open()) {
+            cerr << "Error opening one of the files!" << endl;
+            return;
+        }
+    
+        string line;
+        
+        // Skipping first line of file1 (contains number of vertices and edges)
+        getline(inFile1, line);
+    
+        int vertexIndex = 1;
+        while (getline(inFile1, line)) {
+            string partitionStr;
+            if (!getline(inFile2, partitionStr)) {
+                cerr << "Mismatch in number of lines between graph and partition file!" << endl;
+                break;
+            }
+    
+            int partition = stoi(partitionStr);
+    
+            // Writing "partition vertex neighbors" in merged_file
+            outFile << partition << " " << vertexIndex << " " << line << endl;
+    
+            vertexIndex++;
+        }
+    
+        inFile1.close();
+        inFile2.close();
+        outFile.close();
+    
+        cout << "Merged file written to: " << mergedFile << endl;
+    }    
     
     void displayGraph() {
         cout << "Number of vertices: " << numVertices << endl;
@@ -92,6 +134,7 @@ int main(int argc, char** argv) {
     graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
     graph.convertGraphToMetisGraph();
     graph.applyMetisPartitioning();
+    graph.mergeOutputGraphs();
     graph.displayGraph();
 
     // MPI_Init(&argc, &argv);
