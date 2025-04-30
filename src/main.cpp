@@ -4,7 +4,8 @@
 #include <string>
 #include <sstream>
 #include <fstream>
-// #include <mpi.h>
+#include <mpi.h>
+#include <cstring>
 
 using namespace std;
 
@@ -207,16 +208,56 @@ int main(int argc, char** argv) {
     graph.convertGraphToMetisGraph();
     graph.applyMetisPartitioning();
     graph.mergeOutputGraphs();
-    graph.buildListOfVertices();
-    graph.displayVertexList();
 
-    // MPI_Init(&argc, &argv);
+    MPI_Init(&argc, &argv);
 
-    // int rank, size;
-    // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    // MPI_Comm_size(MPI_COMM_WORLD, &size);
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // MPI_Finalize();
+    string fileContents;
+    int contentLength = 0;
+
+    if (rank == 0) {
+        ifstream file("../metis_graph/merged_file.graph");
+        if (file.is_open()) {
+            stringstream buffer;
+            buffer << file.rdbuf();
+            fileContents = buffer.str();
+            contentLength = fileContents.length();
+            file.close();
+        } else {
+            cerr << "Error opening merged file!" << endl;
+        }
+    }  
+
+    // Broadcast the length of the file contents to all processes
+    MPI_Bcast(&contentLength, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    char *buffer = new char[contentLength + 1];
+    if (rank == 0) {
+        // Copy the file contents to the buffer
+        strcpy(buffer, fileContents.c_str());
+    }
+
+    // Broadcast the file contents to all processes
+    MPI_Bcast(buffer, contentLength + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+    buffer[contentLength] = '\0'; // Null-terminate the string
+
+    string receivedContent(buffer);
+    delete[] buffer;
+
+    vector<string> lines;   
+    istringstream iss(receivedContent);
+    string line;
+    while (getline(iss, line)) {
+        if (!line.empty())
+            lines.push_back(line);
+    }
+
+    cout << "rank " << rank << " received " << lines.size() << " lines from merged graph" << endl;
+
+    MPI_Finalize();
 
     return 0;
 }
