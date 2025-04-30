@@ -82,9 +82,9 @@ public:
         adjList.clear();
     }    
     
-    void applyMetisPartitioning() {
+    void applyMetisPartitioning(int size) {
         string fileName = "../metis_graph/output.graph";
-        string command = "gpmetis " + fileName + " 2";
+        string command = "gpmetis " + fileName + " " + to_string(size);
         int result = system(command.c_str());
         if (result != 0) {
             cerr << "Error running gpmetis!" << endl;
@@ -93,9 +93,9 @@ public:
         cout << "Graph partitioning completed." << endl;
     }
 
-    void mergeOutputGraphs() {
+    void mergeOutputGraphs(int size) {
         string file1 = "../metis_graph/output.graph";
-        string file2 = "../metis_graph/output.graph.part.2";
+        string file2 = "../metis_graph/output.graph.part." + to_string(size);
         string mergedFile = "../metis_graph/merged_file.graph";
     
         ifstream inFile1(file1);
@@ -124,9 +124,6 @@ public:
     
             // Writing "partition vertex neighbors" in merged_file
             outFile << partition << " " << vertexIndex << " " << line << endl;
-
-            // Writing "vertex partition" in vertexPartition map
-            vertexPartition[vertexIndex] = partition;
     
             vertexIndex++;
         }
@@ -202,23 +199,88 @@ public:
     }
 };
 
+map<int, int> buildVertexPartition(vector<string>& lines) {
+    map<int, int> vertexPartition;
+
+    for (const auto& line : lines) {
+        istringstream iss(line);
+        int partition, vertexId;
+        iss >> partition >> vertexId;
+        vertexPartition[vertexId] = partition;
+    }
+
+    return vertexPartition;
+}
+
+vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexPartition, int rank) {
+    vector<Vertex> listOfVertices;
+
+    for (const auto& line : lines) {
+        istringstream iss(line);
+        int partition, vertexId;
+        iss >> partition >> vertexId;
+
+        if (partition == rank) {
+            Vertex vertex;
+            vertex.id = vertexId;
+            vertex.partitionId = partition;
+
+            int neighborId;
+            while (iss >> neighborId) {
+                Vertex neighbor;
+                neighbor.id = neighborId;
+                neighbor.partitionId = vertexPartition[neighborId];
+                vertex.neighbors.push_back(neighbor);
+            }
+
+            listOfVertices.push_back(vertex);
+        }
+    }
+
+    return listOfVertices;
+}
+
+void displayVertexList(vector<Vertex>& listOfVertices) {
+    
+    cout << "\n--- Displaying First 5 Vertices ---\n";
+    cout << "Partition | Vertex ID | Neighbors\n";
+    cout << "--------------------------------------------\n";
+
+    int count = 0;
+    for (const auto& vertex : listOfVertices) {
+        if (count >= 5) break;
+
+        cout << "    " << vertex.partitionId
+             << "     |     " << vertex.id << "     | ";
+
+        for (const auto& neighbor : vertex.neighbors) {
+            cout << neighbor.id << " ";
+        }
+        cout << endl;
+
+        count++;
+    }
+
+    cout << "--------------------------------------------\n";
+}
+
 int main(int argc, char** argv) {
-    Graph graph;
-    graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
-    graph.convertGraphToMetisGraph();
-    graph.applyMetisPartitioning();
-    graph.mergeOutputGraphs();
-
     MPI_Init(&argc, &argv);
-
+    
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-
+    
     string fileContents;
     int contentLength = 0;
-
+    
     if (rank == 0) {
+        Graph graph;
+        graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
+        graph.convertGraphToMetisGraph();
+        graph.applyMetisPartitioning(size);
+        graph.mergeOutputGraphs(size);
+
         ifstream file("../metis_graph/merged_file.graph");
         if (file.is_open()) {
             stringstream buffer;
@@ -256,6 +318,10 @@ int main(int argc, char** argv) {
     }
 
     cout << "rank " << rank << " received " << lines.size() << " lines from merged graph" << endl;
+
+    map<int, int> vertexPartitions = buildVertexPartition(lines);
+    vector<Vertex> listOfVertices = buildListOfVertices(lines, vertexPartitions, rank);
+    // displayVertexList(listOfVertices);
 
     MPI_Finalize();
 
