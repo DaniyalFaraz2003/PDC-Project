@@ -6,6 +6,8 @@
 #include <fstream>
 #include <mpi.h>
 #include <cstring>
+#include <unordered_set>
+#include <set>
 
 using namespace std;
 
@@ -28,6 +30,8 @@ public:
         numVertices = 0;
         numEdges = 0;
     }
+
+    int getNumVertices() { return numVertices; }
 
     void loadGraphFromFile(string fileName) {
         ifstream file(fileName);
@@ -205,7 +209,10 @@ map<int, int> buildVertexPartition(vector<string>& lines) {
     for (const auto& line : lines) {
         istringstream iss(line);
         int partition, vertexId;
-        iss >> partition >> vertexId;
+        if (!(iss >> partition >> vertexId)) {
+            cerr << "Error parsing line: " << line << endl;
+            continue;
+        }
         vertexPartition[vertexId] = partition;
     }
 
@@ -214,11 +221,16 @@ map<int, int> buildVertexPartition(vector<string>& lines) {
 
 vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexPartition, int rank) {
     vector<Vertex> listOfVertices;
+    set<int> missingPartitionInfo;
 
     for (const auto& line : lines) {
         istringstream iss(line);
         int partition, vertexId;
-        iss >> partition >> vertexId;
+        
+        if (!(iss >> partition >> vertexId)) {
+            cerr << "Error parsing line: " << line << endl;
+            continue;
+        }
 
         if (partition == rank) {
             Vertex vertex;
@@ -229,7 +241,16 @@ vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexP
             while (iss >> neighborId) {
                 Vertex neighbor;
                 neighbor.id = neighborId;
-                neighbor.partitionId = vertexPartition[neighborId];
+                
+                // Check if we know this neighbor's partition
+                auto it = vertexPartition.find(neighborId);
+                if (it != vertexPartition.end()) {
+                    neighbor.partitionId = it->second;
+                } else {
+                    missingPartitionInfo.insert(neighborId);
+                    neighbor.partitionId = rank; // Default to our partition as fallback
+                }
+                
                 vertex.neighbors.push_back(neighbor);
             }
 
@@ -237,6 +258,21 @@ vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexP
         }
     }
 
+    // Report any missing partition information
+    if (!missingPartitionInfo.empty()) {
+        cerr << "Process " << rank << " found " << missingPartitionInfo.size() 
+             << " neighbors with unknown partition assignment." << endl;
+        
+        // Optionally print some examples
+        int count = 0;
+        for (int id : missingPartitionInfo) {
+            if (count++ < 5)
+                cerr << "  Missing partition for vertex ID: " << id << endl;
+        }
+        if (count > 5)
+            cerr << "  ... and " << (missingPartitionInfo.size() - 5) << " more" << endl;
+    }
+    
     return listOfVertices;
 }
 
@@ -262,6 +298,88 @@ void displayVertexList(vector<Vertex>& listOfVertices) {
     }
 
     cout << "--------------------------------------------\n";
+}
+
+bool testPartition(vector<Vertex>& listOfVertices, int rank, int numProcesses) {
+    bool allGood = true;
+    
+    // a quick lookup for local vertex IDs
+    unordered_set<int> localVertexIds;
+    for (const auto& v : listOfVertices) {
+        localVertexIds.insert(v.id);
+    }
+    
+    // Count how many messages each process will receive
+    vector<int> sendCounts(numProcesses, 0);
+    
+    // First, count the messages we'll send to each process
+    for (const auto& vertex : listOfVertices) {
+        for (const auto& neighbor : vertex.neighbors) {
+            if (neighbor.partitionId != rank) {
+                sendCounts[neighbor.partitionId]++;
+            }
+        }
+    }
+    
+    // Share these counts with all processes
+    vector<int> recvCounts(numProcesses);
+    MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    
+    // Now everyone knows how many messages to expect from each process
+    int totalToReceive = 0;
+    for (int count : recvCounts) {
+        totalToReceive += count;
+    }
+    
+    // Send the vertex IDs to their respective processes
+    vector<MPI_Request> sendRequests;
+    for (const auto& vertex : listOfVertices) {
+        for (const auto& neighbor : vertex.neighbors) {
+            if (neighbor.partitionId != rank) {
+                int targetRank = neighbor.partitionId;
+                int neighborId = neighbor.id;
+                
+                MPI_Request req;
+                MPI_Isend(&neighborId, 1, MPI_INT, targetRank, 0, MPI_COMM_WORLD, &req);
+                sendRequests.push_back(req);
+            }
+        }
+    }
+    
+    // Receive and process all expected messages
+    int receivedCount = 0;
+    while (receivedCount < totalToReceive) {
+        MPI_Status status;
+        int vertexId;
+        MPI_Recv(&vertexId, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+        receivedCount++;
+        
+        int response = localVertexIds.find(vertexId) != localVertexIds.end();
+        MPI_Send(&response, 1, MPI_INT, status.MPI_SOURCE, 1, MPI_COMM_WORLD);
+    }
+    
+    // Wait for all our send operations to complete
+    MPI_Waitall(sendRequests.size(), sendRequests.data(), MPI_STATUS_IGNORE);
+    
+    // Now receive the validation responses for our queries
+    int totalQueries = 0;
+    for (int count : sendCounts) {
+        totalQueries += count;
+    }
+    
+    for (int i = 0; i < totalQueries; i++) {
+        int result;
+        MPI_Status status;
+        MPI_Recv(&result, 1, MPI_INT, MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &status);
+        
+        if (result != 1) {
+            allGood = false;
+            cout << "Process " << rank << " found missing vertex on process " << status.MPI_SOURCE << endl;
+            break;
+        }
+    }
+     
+    return allGood;
 }
 
 int main(int argc, char** argv) {
@@ -322,6 +440,12 @@ int main(int argc, char** argv) {
     map<int, int> vertexPartitions = buildVertexPartition(lines);
     vector<Vertex> listOfVertices = buildListOfVertices(lines, vertexPartitions, rank);
     // displayVertexList(listOfVertices);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    bool result = testPartition(listOfVertices, rank, size);
+
+    cout << "Rank " << rank << " has " << (result ? "valid" : "invalid") << " partitions." << endl;
 
     MPI_Finalize();
 
