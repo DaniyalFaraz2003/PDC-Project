@@ -15,6 +15,7 @@ struct Vertex {
     int id;
     int partitionId;
     vector<Vertex> neighbors;
+    vector<float> weights;
 };
 
 class Graph {
@@ -394,7 +395,7 @@ int main(int argc, char** argv) {
     
     if (rank == 0) {
         Graph graph;
-        graph.loadGraphFromFile("../graphs/p2p-Gnutella-small.txt");
+        graph.loadGraphFromFile("../graphs/initial_graph.txt");
         graph.convertGraphToMetisGraph();
         graph.applyMetisPartitioning(size);
         graph.mergeOutputGraphs(size);
@@ -439,9 +440,9 @@ int main(int argc, char** argv) {
 
     map<int, int> vertexPartitions = buildVertexPartition(lines);
     vector<Vertex> listOfVertices = buildListOfVertices(lines, vertexPartitions, rank);
+    MPI_Barrier(MPI_COMM_WORLD);
     // displayVertexList(listOfVertices);
 
-    MPI_Barrier(MPI_COMM_WORLD);
 
     bool result = testPartition(listOfVertices, rank, size);
 
