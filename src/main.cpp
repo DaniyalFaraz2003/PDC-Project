@@ -297,6 +297,15 @@ public:
             distance[vertex.id] = numeric_limits<float>::infinity();
         }
     }
+
+    ~ParallelDijkstra() {
+        // Clean up any pending MPI requests
+        for (auto& req : pending_requests) {
+            if (req != MPI_REQUEST_NULL) {
+                MPI_Request_free(&req);
+            }
+        }
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
