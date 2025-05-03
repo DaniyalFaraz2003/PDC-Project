@@ -396,6 +396,64 @@ public:
 
         return true;
     }
+
+    void run() {
+        int local_done = 0;
+        int global_done = 0;
+        
+        do {
+            // Process any incoming messages first
+            process_incoming_messages();
+            
+            // Process local queue
+            if (!pq.empty()) {
+                step();
+                local_done = 0;  // Still have work to do
+            } else {
+                local_done = 1;  // Local work is done for now
+            }
+            
+            // Wait for all pending communications to complete
+            if (!pending_requests.empty()) {
+                MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+                pending_requests.clear();
+            }
+            
+            // Check if all processes are done
+            MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+            
+            // All processes are done if global_done equals world_size
+            // But we need one more round to ensure all messages are processed
+            if (global_done == world_size) {
+                // Process any final messages
+                process_incoming_messages();
+                
+                // Recheck if we're still done
+                local_done = pq.empty() ? 1 : 0;
+                MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+            }
+            
+        } while (global_done < world_size);
+        
+        // Debug output - counts for non-infinity distances
+        int non_inf_count = 0;
+        for (const auto& [id, dist] : distance) {
+            if (dist < numeric_limits<float>::infinity()) {
+                non_inf_count++;
+            }
+        }
+        cout << "Rank " << rank << " finished with " << non_inf_count << " reachable vertices" << endl;
+    }
+
+    // Get the computed distances (only valid for local vertices)
+    const unordered_map<int, float>& get_distances() const {
+        return distance;
+    }
+
+    // Get the computed predecessors (only valid for local vertices)
+    const unordered_map<int, int>& get_predecessors() const {
+        return predecessor;
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
