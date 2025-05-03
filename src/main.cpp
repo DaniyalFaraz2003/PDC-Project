@@ -204,6 +204,16 @@ public:
     }
 };
 
+class ParallelDijkstra {
+private:
+    int rank;
+    int world_size;
+    vector<Vertex>& vertices; // Reference to local vertices
+    unordered_map<int, float> distance; // Distance map (vertex ID -> distance)
+    unordered_map<int, int> predecessor; // Predecessor map for path reconstruction
+    map<int, int> vertex_to_partition; // Maps vertex IDs to their partition/rank
+};
+
 map<int, int> buildVertexPartition(vector<string>& lines) {
     map<int, int> vertexPartition;
 
