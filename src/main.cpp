@@ -284,6 +284,19 @@ private:
             MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
         }
     }
+
+public:
+    ParallelDijkstra(int rank, int world_size, vector<Vertex>& vertices, const map<int, int>& vertex_partition_map)
+        : vertices(vertices) {
+        this->rank = rank;
+        this->world_size = world_size;
+        this->vertex_to_partition = vertex_partition_map;
+
+        // Initialize distance map with infinity
+        for (const auto& vertex : vertices) {
+            distance[vertex.id] = numeric_limits<float>::infinity();
+        }
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
