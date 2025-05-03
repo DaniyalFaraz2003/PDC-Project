@@ -247,6 +247,43 @@ private:
         MPI_Isend(buffer.data(), buffer.size(), MPI_CHAR, dest_rank, 0, MPI_COMM_WORLD, &req);
         pending_requests.push_back(req);
     }
+
+    // Update process_incoming_messages to match the new format
+    void process_incoming_messages() {
+        int flag = 1;
+        MPI_Status status;
+        
+        // Check for messages
+        MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+        while (flag) {
+            int count;
+            MPI_Get_count(&status, MPI_CHAR, &count);
+            
+            // Each message contains a pair of (vertex_id, distance)
+            vector<char> buffer(count);
+            MPI_Recv(buffer.data(), count, MPI_CHAR, status.MPI_SOURCE, 0, 
+                    MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            
+            // Unpack data safely
+            int vertex_id = *reinterpret_cast<int*>(buffer.data());
+            float new_dist = *reinterpret_cast<float*>(buffer.data() + sizeof(int));
+            
+            // Update distance if improved
+            auto dist_it = distance.find(vertex_id);
+            if (dist_it != distance.end() && new_dist < dist_it->second) {
+                distance[vertex_id] = new_dist;
+                
+                // Add to priority queue if it's a local vertex
+                auto part_it = vertex_to_partition.find(vertex_id);
+                if (part_it != vertex_to_partition.end() && part_it->second == rank) {
+                    pq.push({new_dist, vertex_id});
+                }
+            }
+            
+            // Check for next message
+            MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+        }
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
