@@ -306,6 +306,42 @@ public:
             }
         }
     }
+
+    void initialize(int source_vertex) {
+        // Initialize all KNOWN vertices with infinity
+        for (const auto& vertex : vertices) {
+            distance[vertex.id] = numeric_limits<float>::infinity();
+            
+            // Also initialize distances for neighbor vertices we know about
+            for (const auto& neighbor : vertex.neighbors) {
+                if (distance.find(neighbor.id) == distance.end()) {
+                    distance[neighbor.id] = numeric_limits<float>::infinity();
+                }
+            }
+        }
+        
+        // Set source vertex distance to 0
+        auto src_part_it = vertex_to_partition.find(source_vertex);
+        if (src_part_it != vertex_to_partition.end() && src_part_it->second == rank) {
+            // Source is local - set distance to 0
+            distance[source_vertex] = 0.0f;
+            pq.push({0.0f, source_vertex});
+            cout << "Rank " << rank << " initialized source vertex " << source_vertex << " with distance 0" << endl;
+        } else if (distance.find(source_vertex) != distance.end()) {
+            // Source is known but not local - initialize with infinity
+            // We'll receive updates from the process that owns it
+            distance[source_vertex] = numeric_limits<float>::infinity();
+        }
+        
+        // Global synchronization to ensure the source is initialized somewhere
+        int have_source = (src_part_it != vertex_to_partition.end() && src_part_it->second == rank) ? 1 : 0;
+        int global_have_source = 0;
+        MPI_Allreduce(&have_source, &global_have_source, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        
+        if (global_have_source == 0 && rank == 0) {
+            cerr << "WARNING: Source vertex " << source_vertex << " not found in any partition!" << endl;
+        }
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
