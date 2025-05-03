@@ -700,6 +700,26 @@ int main(int argc, char** argv) {
 
     cout << "Rank " << rank << " has " << (result ? "valid" : "invalid") << " partitions." << endl;
 
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    cout << "Rank " << rank << " is applying Dijkstra Algorithm " << endl;
+
+    ParallelDijkstra dijkstra(rank, size, listOfVertices, vertexPartitions);
+    dijkstra.initialize(1); // Initialize with source vertex ID 1
+    dijkstra.run();
+    
+    const auto& distances = dijkstra.get_distances();
+    const auto& predecessors = dijkstra.get_predecessors();
+
+    // Print local results
+    for (const auto& vertex : listOfVertices) {
+        cout << "Vertex " << vertex.id << ": distance = " << distances.at(vertex.id);
+        if (predecessors.find(vertex.id) != predecessors.end()) {
+            cout << ", predecessor = " << predecessors.at(vertex.id);
+        }
+        cout << endl;
+    }
+    
     MPI_Finalize();
 
     return 0;
