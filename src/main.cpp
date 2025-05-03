@@ -342,6 +342,60 @@ public:
             cerr << "WARNING: Source vertex " << source_vertex << " not found in any partition!" << endl;
         }
     }
+
+    // Perform one iteration of Dijkstra's algorithm
+    bool step() {
+        // First, check for any incoming messages
+        process_incoming_messages();
+
+        if (pq.empty()) {
+            return false; // No more work to do
+        }
+
+        auto current = pq.top();
+        pq.pop();
+        float current_dist = current.first;
+        int u = current.second;
+
+        // Find the vertex in our local list (if it exists)
+        Vertex* vertex_ptr = nullptr;
+        for (auto& v : vertices) {
+            if (v.id == u) {
+                vertex_ptr = &v;
+                break;
+            }
+        }
+
+        // If we don't have this vertex locally, skip (it was just a distance update)
+        if (!vertex_ptr) {
+            return true;
+        }
+
+        // Relax all edges
+        for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
+            int v = vertex_ptr->neighbors[i].id;
+            float weight = vertex_ptr->weights[i];
+            float new_dist = current_dist + weight;
+
+            // Check if we need to update the distance
+            if (new_dist < distance[v]) {
+                distance[v] = new_dist;
+                predecessor[v] = u;
+
+                // Check if the neighbor is local or remote
+                auto it = vertex_to_partition.find(v);
+                if (it != vertex_to_partition.end() && it->second == rank) {
+                    // Local vertex - add to priority queue
+                    pq.push({new_dist, v});
+                } else {
+                    // Remote vertex - send update to owning process
+                    send_distance_update(v, new_dist);
+                }
+            }
+        }
+
+        return true;
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
