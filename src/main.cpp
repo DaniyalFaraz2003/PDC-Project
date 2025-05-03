@@ -169,6 +169,7 @@ public:
                 neighbor.id = neighborId;
                 neighbor.partitionId = vertexPartition[neighborId]; // using your partition map
                 vertex.neighbors.push_back(neighbor);
+                vertex.weights.push_back(1.0f);
             }
     
             listOfVertices.push_back(vertex);
@@ -508,6 +509,7 @@ vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexP
                     neighbor.partitionId = rank; // Default to our partition as fallback
                 }
                 
+                vertex.weights.push_back(1.0f);
                 vertex.neighbors.push_back(neighbor);
             }
 
