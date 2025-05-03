@@ -219,6 +219,34 @@ private:
 
     // Track pending MPI requests for asynchronous communication
     vector<MPI_Request> pending_requests;
+
+    // Change send_distance_update to use the correct types
+    void send_distance_update(int vertex_id, float new_dist) {
+        auto it = vertex_to_partition.find(vertex_id);
+        if (it == vertex_to_partition.end()) {
+            // Don't know where to send this - maybe log a warning
+            return;
+        }
+
+        int dest_rank = it->second;
+        if (dest_rank == rank) {
+            // Shouldn't happen - we checked before calling
+            return;
+        }
+
+        // Pack vertex_id and distance correctly
+        vector<char> buffer(sizeof(int) + sizeof(float));
+        int* id_ptr = reinterpret_cast<int*>(buffer.data());
+        float* dist_ptr = reinterpret_cast<float*>(buffer.data() + sizeof(int));
+        
+        *id_ptr = vertex_id;
+        *dist_ptr = new_dist;
+
+        // Send asynchronously
+        MPI_Request req;
+        MPI_Isend(buffer.data(), buffer.size(), MPI_CHAR, dest_rank, 0, MPI_COMM_WORLD, &req);
+        pending_requests.push_back(req);
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
