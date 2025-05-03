@@ -212,6 +212,13 @@ private:
     unordered_map<int, float> distance; // Distance map (vertex ID -> distance)
     unordered_map<int, int> predecessor; // Predecessor map for path reconstruction
     map<int, int> vertex_to_partition; // Maps vertex IDs to their partition/rank
+
+    // Priority queue element: (distance, vertex_id)
+    using QueueElement = pair<float, int>;
+    priority_queue<QueueElement, vector<QueueElement>, greater<QueueElement>> pq;
+
+    // Track pending MPI requests for asynchronous communication
+    vector<MPI_Request> pending_requests;
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
