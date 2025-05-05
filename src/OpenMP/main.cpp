@@ -397,20 +397,22 @@ public:
         }
     }
 
-    // Perform one iteration of Dijkstra's algorithm
+    // Perform one iteration of Dijkstra's algorithm with OpenMP enhancements
     bool step() {
         // First, check for any incoming messages
         process_incoming_messages();
-
+        
         if (pq.empty()) {
             return false; // No more work to do
         }
-
+        
+        // Note: We cannot directly parallelize the priority queue extraction
+        // But we can parallelize the edge relaxation after extracting a vertex
         auto current = pq.top();
         pq.pop();
         float current_dist = current.first;
         int u = current.second;
-
+        
         // Find the vertex in our local list (if it exists)
         Vertex* vertex_ptr = nullptr;
         for (auto& v : vertices) {
@@ -419,35 +421,70 @@ public:
                 break;
             }
         }
-
+        
         // If we don't have this vertex locally, skip (it was just a distance update)
         if (!vertex_ptr) {
             return true;
         }
-
-        // Relax all edges
-        for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
-            int v = vertex_ptr->neighbors[i].id;
-            float weight = vertex_ptr->weights[i];
-            float new_dist = current_dist + weight;
-
-            // Check if we need to update the distance
-            if (new_dist < distance[v]) {
-                distance[v] = new_dist;
-                predecessor[v] = u;
-
-                // Check if the neighbor is local or remote
-                auto it = vertex_to_partition.find(v);
-                if (it != vertex_to_partition.end() && it->second == rank) {
-                    // Local vertex - add to priority queue
-                    pq.push({new_dist, v});
-                } else {
-                    // Remote vertex - send update to owning process
-                    send_distance_update(v, new_dist);
+        
+        // Create thread-local updates to avoid contention on the priority queue
+        int max_threads = omp_get_max_threads();
+        vector<vector<pair<int, float>>> thread_updates(max_threads);
+        
+        // Relax all edges in parallel
+        #pragma omp parallel
+        {
+            int thread_id = omp_get_thread_num();
+            
+            #pragma omp for schedule(dynamic, 32)
+            for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
+                int v = vertex_ptr->neighbors[i].id;
+                float weight = vertex_ptr->weights[i];
+                float new_dist = current_dist + weight;
+                
+                // Check if we need to update the distance
+                bool need_update = false;
+                
+                #pragma omp critical(distance_check)
+                {
+                    if (new_dist < distance[v]) {
+                        distance[v] = new_dist;
+                        predecessor[v] = u;
+                        need_update = true;
+                    }
+                }
+                
+                if (need_update) {
+                    // Check if the neighbor is local or remote
+                    auto it = vertex_to_partition.find(v);
+                    if (it != vertex_to_partition.end() && it->second == rank) {
+                        // Local vertex - collect updates for priority queue
+                        thread_updates[thread_id].push_back({v, new_dist});
+                    } else {
+                        // Remote vertex - send update to owning process
+                        send_distance_update(v, new_dist, thread_id);
+                    }
                 }
             }
         }
-
+        
+        // Merge thread-local updates into the priority queue
+        for (const auto& updates : thread_updates) {
+            for (const auto& update : updates) {
+                pq.push({update.second, update.first});
+            }
+        }
+        
+        // Collect all pending requests from threads
+        for (int thread_id = 0; thread_id < max_threads; thread_id++) {
+            if (!thread_pending_requests[thread_id].empty()) {
+                pending_requests.insert(pending_requests.end(), 
+                                       thread_pending_requests[thread_id].begin(),
+                                       thread_pending_requests[thread_id].end());
+                thread_pending_requests[thread_id].clear();
+            }
+        }
+        
         return true;
     }
 
