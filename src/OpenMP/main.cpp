@@ -266,13 +266,18 @@ private:
         pending_requests.push_back(req);
     }
 
-    // Update process_incoming_messages to match the new format
+    // Parallel processing of incoming messages
     void process_incoming_messages() {
         int flag = 1;
         MPI_Status status;
         
         // Check for messages
         MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+        
+        // Collect all messages first to process them in parallel
+        vector<vector<char>> message_buffers;
+        vector<int> message_sizes;
+        
         while (flag) {
             int count;
             MPI_Get_count(&status, MPI_CHAR, &count);
@@ -282,24 +287,38 @@ private:
             MPI_Recv(buffer.data(), count, MPI_CHAR, status.MPI_SOURCE, 0, 
                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             
-            // Unpack data safely
-            int vertex_id = *reinterpret_cast<int*>(buffer.data());
-            float new_dist = *reinterpret_cast<float*>(buffer.data() + sizeof(int));
-            
-            // Update distance if improved
-            auto dist_it = distance.find(vertex_id);
-            if (dist_it != distance.end() && new_dist < dist_it->second) {
-                distance[vertex_id] = new_dist;
-                
-                // Add to priority queue if it's a local vertex
-                auto part_it = vertex_to_partition.find(vertex_id);
-                if (part_it != vertex_to_partition.end() && part_it->second == rank) {
-                    pq.push({new_dist, vertex_id});
-                }
-            }
+            message_buffers.push_back(buffer);
+            message_sizes.push_back(count);
             
             // Check for next message
             MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+        }
+        
+        // Process collected messages in parallel
+        if (!message_buffers.empty()) {
+            #pragma omp parallel for schedule(dynamic, 16)
+            for (size_t i = 0; i < message_buffers.size(); i++) {
+                const auto& buffer = message_buffers[i];
+                
+                // Unpack data safely
+                int vertex_id = *reinterpret_cast<const int*>(buffer.data());
+                float new_dist = *reinterpret_cast<const float*>(buffer.data() + sizeof(int));
+                
+                // Update distance if improved - needs atomic operation or critical section
+                #pragma omp critical(distance_update)
+                {
+                    auto dist_it = distance.find(vertex_id);
+                    if (dist_it != distance.end() && new_dist < dist_it->second) {
+                        distance[vertex_id] = new_dist;
+                        
+                        // Add to priority queue if it's a local vertex
+                        auto part_it = vertex_to_partition.find(vertex_id);
+                        if (part_it != vertex_to_partition.end() && part_it->second == rank) {
+                            pq.push({new_dist, vertex_id});
+                        }
+                    }
+                }
+            }
         }
     }
 
