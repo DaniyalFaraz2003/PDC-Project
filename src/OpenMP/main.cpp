@@ -585,18 +585,37 @@ map<int, int> buildVertexPartition(vector<string>& lines) {
 
 vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexPartition, int rank) {
     vector<Vertex> listOfVertices;
-    set<int> missingPartitionInfo;
+    vector<int> missingPartitionInfo;
+    omp_lock_t missingLock;
+    omp_init_lock(&missingLock);
 
-    for (const auto& line : lines) {
-        istringstream iss(line);
+    // First pass - count vertices for this rank to pre-allocate
+    int vertexCount = 0;
+    #pragma omp parallel for reduction(+:vertexCount)
+    for (size_t i = 0; i < lines.size(); i++) {
+        istringstream iss(lines[i]);
         int partition, vertexId;
-        
-        if (!(iss >> partition >> vertexId)) {
-            cerr << "Error parsing line: " << line << endl;
-            continue;
+        if (iss >> partition >> vertexId && partition == rank) {
+            vertexCount++;
         }
+    }
+    listOfVertices.reserve(vertexCount);
 
-        if (partition == rank) {
+    // Second pass - process lines in parallel
+    #pragma omp parallel
+    {
+        vector<Vertex> localVertices;
+        vector<int> localMissing;
+        
+        #pragma omp for nowait
+        for (size_t i = 0; i < lines.size(); i++) {
+            const auto& line = lines[i];
+            istringstream iss(line);
+            int partition, vertexId;
+            
+            if (!(iss >> partition >> vertexId)) continue;
+            if (partition != rank) continue;
+
             Vertex vertex;
             vertex.id = vertexId;
             vertex.partitionId = partition;
@@ -606,38 +625,54 @@ vector<Vertex> buildListOfVertices(vector<string>& lines, map<int, int>& vertexP
                 Vertex neighbor;
                 neighbor.id = neighborId;
                 
-                // Check if we know this neighbor's partition
-                auto it = vertexPartition.find(neighborId);
-                if (it != vertexPartition.end()) {
-                    neighbor.partitionId = it->second;
-                } else {
-                    missingPartitionInfo.insert(neighborId);
-                    neighbor.partitionId = rank; // Default to our partition as fallback
+                // Check partition (thread-safe with critical section)
+                #pragma omp critical(partition_lookup)
+                {
+                    auto it = vertexPartition.find(neighborId);
+                    neighbor.partitionId = (it != vertexPartition.end()) ? it->second : rank;
+                    if (it == vertexPartition.end()) {
+                        localMissing.push_back(neighborId);
+                    }
                 }
                 
                 vertex.weights.push_back(1.0f);
                 vertex.neighbors.push_back(neighbor);
             }
 
-            listOfVertices.push_back(vertex);
+            localVertices.push_back(vertex);
+        }
+
+        // Merge thread-local results
+        #pragma omp critical(merge_results)
+        {
+            listOfVertices.insert(listOfVertices.end(), 
+                                  localVertices.begin(), 
+                                  localVertices.end());
+            missingPartitionInfo.insert(missingPartitionInfo.end(),
+                                      localMissing.begin(),
+                                      localMissing.end());
         }
     }
 
-    // Report any missing partition information
+    // Report missing partitions
     if (!missingPartitionInfo.empty()) {
+        sort(missingPartitionInfo.begin(), missingPartitionInfo.end());
+        missingPartitionInfo.erase(unique(missingPartitionInfo.begin(), 
+                                        missingPartitionInfo.end()), 
+                                 missingPartitionInfo.end());
+        
         cerr << "Process " << rank << " found " << missingPartitionInfo.size() 
              << " neighbors with unknown partition assignment." << endl;
         
-        // Optionally print some examples
-        int count = 0;
-        for (int id : missingPartitionInfo) {
-            if (count++ < 5)
-                cerr << "  Missing partition for vertex ID: " << id << endl;
+        for (size_t i = 0; i < min(5ul, missingPartitionInfo.size()); i++) {
+            cerr << "  Missing partition for vertex ID: " << missingPartitionInfo[i] << endl;
         }
-        if (count > 5)
+        if (missingPartitionInfo.size() > 5) {
             cerr << "  ... and " << (missingPartitionInfo.size() - 5) << " more" << endl;
+        }
     }
-    
+
+    omp_destroy_lock(&missingLock);
     return listOfVertices;
 }
 
