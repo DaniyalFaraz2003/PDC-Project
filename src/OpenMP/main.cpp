@@ -354,14 +354,23 @@ public:
     }
 
     void initialize(int source_vertex) {
-        // Initialize all KNOWN vertices with infinity
-        for (const auto& vertex : vertices) {
-            distance[vertex.id] = numeric_limits<float>::infinity();
-            
-            // Also initialize distances for neighbor vertices we know about
-            for (const auto& neighbor : vertex.neighbors) {
-                if (distance.find(neighbor.id) == distance.end()) {
-                    distance[neighbor.id] = numeric_limits<float>::infinity();
+        // Initialize all KNOWN vertices with infinity - can be parallelized
+        #pragma omp parallel
+        {
+            #pragma omp for schedule(dynamic, 64)
+            for (size_t i = 0; i < vertices.size(); i++) {
+                const auto& vertex = vertices[i];
+                
+                #pragma omp critical(distance_init)
+                {
+                    distance[vertex.id] = numeric_limits<float>::infinity();
+                    
+                    // Also initialize distances for neighbor vertices we know about
+                    for (const auto& neighbor : vertex.neighbors) {
+                        if (distance.find(neighbor.id) == distance.end()) {
+                            distance[neighbor.id] = numeric_limits<float>::infinity();
+                        }
+                    }
                 }
             }
         }
@@ -375,7 +384,6 @@ public:
             cout << "Rank " << rank << " initialized source vertex " << source_vertex << " with distance 0" << endl;
         } else if (distance.find(source_vertex) != distance.end()) {
             // Source is known but not local - initialize with infinity
-            // We'll receive updates from the process that owns it
             distance[source_vertex] = numeric_limits<float>::infinity();
         }
         
