@@ -45,27 +45,40 @@ public:
             return;
         }
     
+        // Read all lines first (sequential I/O is faster)
+        vector<string> lines;
         string line;
         while (getline(file, line)) {
-            // Skip comment lines
-            if (line.empty() || line[0] == '#') {
-                continue;
+            if (!line.empty() && line[0] != '#') {
+                lines.push_back(line);
             }
+        }
+        file.close();
     
+        // Temporary storage with one mutex per vertex
+        vector<mutex> vertex_mutexes(lines.size() * 2); // Oversized for safety
+        adjList.clear();
+        numEdges = 0;
+    
+        #pragma omp parallel for reduction(+:numEdges) schedule(dynamic, 1024)
+        for (size_t i = 0; i < lines.size(); i++) {
             int u, v;
-            istringstream iss(line);
-            if (!(iss >> u >> v)) {
-                continue;
-            }
+            istringstream iss(lines[i]);
+            if (!(iss >> u >> v)) continue;
     
-            adjList[u + 1].push_back(v + 1);
-            adjList[v + 1].push_back(u + 1);
+            u++; v++; // Convert to 1-based indexing
+    
+            // Lock vertices to prevent concurrent modification
+            lock_guard<mutex> lock_u(vertex_mutexes[u % vertex_mutexes.size()]);
+            lock_guard<mutex> lock_v(vertex_mutexes[v % vertex_mutexes.size()]);
+    
+            adjList[u].push_back(v);
+            adjList[v].push_back(u);
             numEdges++;
         }
     
         numVertices = adjList.size();
-        file.close();
-    }        
+    }       
 
     void convertGraphToMetisGraph() {
         ofstream outfile("../metis_graph/output.graph");
