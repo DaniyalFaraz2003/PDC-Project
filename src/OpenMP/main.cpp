@@ -11,6 +11,10 @@
 #include <queue>
 #include <unordered_map>
 #include <limits>
+#include <omp.h>
+#include <atomic>
+#include <mutex>
+#include <algorithm>
 
 
 using namespace std;
