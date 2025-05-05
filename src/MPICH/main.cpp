@@ -11,7 +11,7 @@
 #include <queue>
 #include <unordered_map>
 #include <limits>
-
+#include <algorithm>
 
 using namespace std;
 
@@ -266,8 +266,7 @@ private:
             
             // Each message contains a pair of (vertex_id, distance)
             vector<char> buffer(count);
-            MPI_Recv(buffer.data(), count, MPI_CHAR, status.MPI_SOURCE, 0, 
-                    MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(buffer.data(), count, MPI_CHAR, status.MPI_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             
             // Unpack data safely
             int vertex_id = *reinterpret_cast<int*>(buffer.data());
@@ -297,9 +296,16 @@ public:
         this->world_size = world_size;
         this->vertex_to_partition = vertex_partition_map;
 
-        // Initialize distance map with infinity
+        // Initialize all KNOWN vertices with infinity
         for (const auto& vertex : vertices) {
             distance[vertex.id] = numeric_limits<float>::infinity();
+            
+            // Also initialize distances for neighbor vertices we know about
+            for (const auto& neighbor : vertex.neighbors) {
+                if (distance.find(neighbor.id) == distance.end()) {
+                    distance[neighbor.id] = numeric_limits<float>::infinity();
+                }
+            }
         }
     }
 
@@ -312,19 +318,7 @@ public:
         }
     }
 
-    void initialize(int source_vertex) {
-        // Initialize all KNOWN vertices with infinity
-        for (const auto& vertex : vertices) {
-            distance[vertex.id] = numeric_limits<float>::infinity();
-            
-            // Also initialize distances for neighbor vertices we know about
-            for (const auto& neighbor : vertex.neighbors) {
-                if (distance.find(neighbor.id) == distance.end()) {
-                    distance[neighbor.id] = numeric_limits<float>::infinity();
-                }
-            }
-        }
-        
+    void initialize(int source_vertex) {        
         // Set source vertex distance to 0
         auto src_part_it = vertex_to_partition.find(source_vertex);
         if (src_part_it != vertex_to_partition.end() && src_part_it->second == rank) {
@@ -458,6 +452,233 @@ public:
     // Get the computed predecessors (only valid for local vertices)
     const unordered_map<int, int>& get_predecessors() const {
         return predecessor;
+    }
+
+    // Algorithm 1: Updating SSSP for a Single Change
+    void single_change_update(int u, int v, float new_weight, bool is_inserted) {
+        // Find the affected vertex x
+        int x;
+        if (distance.find(u) == distance.end() || distance.find(v) == distance.end()) {
+            // One of the vertices is not known to this process
+            return;
+        }
+        
+        if (distance[u] > distance[v]) {
+            x = v;
+        } else {
+            x = u;
+        }
+        
+        // Initialize Priority Queue with x
+        priority_queue<QueueElement, vector<QueueElement>, greater<QueueElement>> local_pq;
+        local_pq.push({distance[x], x});
+        
+        // Update distance for x if edge is inserted
+        if (is_inserted) {
+            if (x == v && distance[u] + new_weight < distance[v]) {
+                distance[v] = distance[u] + new_weight;
+                predecessor[v] = u;
+                local_pq.push({distance[v], v});
+            } else if (x == u && distance[v] + new_weight < distance[u]) {
+                distance[u] = distance[v] + new_weight;
+                predecessor[u] = v;
+                local_pq.push({distance[u], u});
+            }
+        } else { // Edge is deleted
+            // For deletion, we need to identify all affected vertices
+            // We'll call identify_affected_vertices function
+            vector<int> affected_vertices = identify_affected_vertices(u, v);
+            
+            // Reset distances for affected vertices to infinity
+            for (int vertex : affected_vertices) {
+                if (vertex_to_partition[vertex] == rank) {
+                    distance[vertex] = numeric_limits<float>::infinity();
+                    local_pq.push({distance[vertex], vertex});
+                }
+            }
+        }
+        
+        // Process the queue to update affected subgraph
+        while (!local_pq.empty()) {
+            auto current = local_pq.top();
+            local_pq.pop();
+            int z = current.second;
+            float current_dist = current.first;
+            
+            // Find the vertex in our local list
+            bool is_local = false;
+            Vertex* vertex_ptr = nullptr;
+            for (auto& v : vertices) {
+                if (v.id == z) {
+                    vertex_ptr = &v;
+                    is_local = true;
+                    break;
+                }
+            }
+            
+            if (!is_local) {
+                continue; // Skip non-local vertices
+            }
+            
+            bool updated = false;
+            
+            // Relax all edges from z
+            for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
+                int neighbor = vertex_ptr->neighbors[i].id;
+                float weight = vertex_ptr->weights[i];
+                float new_dist = current_dist + weight;
+                
+                if (new_dist < distance[neighbor]) {
+                    distance[neighbor] = new_dist;
+                    predecessor[neighbor] = z;
+                    updated = true;
+                    
+                    // Check if neighbor is local or remote
+                    auto it = vertex_to_partition.find(neighbor);
+                    if (it != vertex_to_partition.end() && it->second == rank) {
+                        // Local vertex - add to priority queue
+                        local_pq.push({new_dist, neighbor});
+                    } else {
+                        // Remote vertex - send update to owning process
+                        send_distance_update(neighbor, new_dist);
+                    }
+                }
+            }
+        }
+    }
+
+    // Algorithm 2: Identify Affected Vertices
+    vector<int> identify_affected_vertices(int u, int v) {
+        vector<int> affected_vertices;
+        unordered_map<int, bool> affected_map;
+        
+        // Initialize affected vertices
+        affected_map[v] = true;
+        affected_vertices.push_back(v);
+        
+        // For each vertex in our partition
+        for (auto& vertex : vertices) {
+            int vertex_id = vertex.id;
+            
+            // Check if this vertex is affected by the edge deletion
+            if (predecessor[vertex_id] == u && vertex_id == v) {
+                // This vertex used the deleted edge directly
+                distance[vertex_id] = numeric_limits<float>::infinity();
+                affected_map[vertex_id] = true;
+                affected_vertices.push_back(vertex_id);
+            }
+            
+            // Process affected vertices in a BFS manner
+            for (size_t i = 0; i < affected_vertices.size(); i++) {
+                int affected_id = affected_vertices[i];
+                
+                // Find children of this affected vertex
+                for (auto& v : vertices) {
+                    if (predecessor[v.id] == affected_id) {
+                        // This vertex is a child of an affected vertex
+                        distance[v.id] = numeric_limits<float>::infinity();
+                        if (!affected_map[v.id]) {
+                            affected_map[v.id] = true;
+                            affected_vertices.push_back(v.id);
+                        }
+                    }
+                }
+            }
+        }
+        
+        return affected_vertices;
+    }
+
+    // Algorithm 3: Update Affected Vertices
+    void update_affected_vertices(const vector<int>& affected_vertices) {
+        // Create a priority queue with all non-affected vertices
+        priority_queue<QueueElement, vector<QueueElement>, greater<QueueElement>> local_pq;
+        
+        // Add all vertices with known distances that weren't affected
+        for (const auto& [id, dist] : distance) {
+            if (dist < numeric_limits<float>::infinity() && 
+                find(affected_vertices.begin(), affected_vertices.end(), id) == affected_vertices.end()) {
+                local_pq.push({dist, id});
+            }
+        }
+        
+        // Process the queue to update affected vertices
+        while (!local_pq.empty()) {
+            auto current = local_pq.top();
+            local_pq.pop();
+            int z = current.second;
+            float current_dist = current.first;
+            
+            // Find the vertex in our local list
+            bool is_local = false;
+            Vertex* vertex_ptr = nullptr;
+            for (auto& v : vertices) {
+                if (v.id == z) {
+                    vertex_ptr = &v;
+                    is_local = true;
+                    break;
+                }
+            }
+            
+            if (!is_local) {
+                continue; // Skip non-local vertices
+            }
+            
+            // Relax all edges from z
+            for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
+                int neighbor = vertex_ptr->neighbors[i].id;
+                float weight = vertex_ptr->weights[i];
+                float new_dist = current_dist + weight;
+                
+                // Check if we're improving the distance
+                if (new_dist < distance[neighbor]) {
+                    distance[neighbor] = new_dist;
+                    predecessor[neighbor] = z;
+                    
+                    // Check if neighbor is local or remote
+                    auto it = vertex_to_partition.find(neighbor);
+                    if (it != vertex_to_partition.end() && it->second == rank) {
+                        // Local vertex - add to priority queue
+                        local_pq.push({new_dist, neighbor});
+                    } else {
+                        // Remote vertex - send update to owning process
+                        send_distance_update(neighbor, new_dist);
+                    }
+                }
+            }
+        }
+    }
+
+    // Main dynamic SSSP update function
+    void update_edge(int u, int v, float new_weight, bool is_inserted) {
+        // First, synchronize with all processes
+        MPI_Barrier(MPI_COMM_WORLD);
+        
+        if (rank == 0) {
+            cout << "Updating edge (" << u << ", " << v << ") with weight " 
+                << new_weight << ", operation: " << (is_inserted ? "insert" : "delete") << endl;
+        }
+        
+        // For edge insertion, use single_change_update directly
+        if (is_inserted) {
+            single_change_update(u, v, new_weight, true);
+        } else {
+            // For edge deletion, we need to:
+            // 1. Identify affected vertices
+            vector<int> affected_vertices = identify_affected_vertices(u, v);
+            
+            // 2. Update affected vertices
+            update_affected_vertices(affected_vertices);
+        }
+        
+        // Wait for all pending communications to complete
+        if (!pending_requests.empty()) {
+            MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+            pending_requests.clear();
+        }
+        
+        // Synchronize again once update is complete
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 };
 
@@ -713,6 +934,18 @@ int main(int argc, char** argv) {
     ParallelDijkstra dijkstra(rank, size, listOfVertices, vertexPartitions);
     dijkstra.initialize(1); // Initialize with source vertex ID 1
     dijkstra.run();
+
+    // Example edge update - insert a new edge
+    // int u = 120, v = 121;
+    // float weight = 0.5;
+    // bool is_inserted = true;
+    // dijkstra.update_edge(u, v, weight, is_inserted);
+    
+    // // Example edge update - delete an edge
+    // u = 3;
+    // v = 4;
+    // is_inserted = false;
+    // dijkstra.update_edge(u, v, 0.0, is_inserted);
     
     const auto& distances = dijkstra.get_distances();
     const auto& predecessors = dijkstra.get_predecessors();

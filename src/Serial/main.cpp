@@ -11,6 +11,7 @@ using namespace std;
 struct Vertex {
     int id;
     vector<Vertex*> neighbors;
+    float weight = 1.0f;
 };
 
 class Graph {
@@ -64,7 +65,70 @@ public:
     
         numVertices = adjList.size();
         file.close();
-    }    
+    }  
+    
+    bool addEdge(int u, int v, float weight = 1.0f) {
+        // Check if vertices exist
+        if (adjList.find(u) == adjList.end()) {
+            adjList[u] = Vertex{u, {}};
+            numVertices++;
+        }
+        if (adjList.find(v) == adjList.end()) {
+            adjList[v] = Vertex{v, {}};
+            numVertices++;
+        }
+
+        // Check if edge already exists
+        for (auto& neighbor : adjList[u].neighbors) {
+            if (neighbor->id == v) {
+                return false; // Edge already exists
+            }
+        }
+
+        // Add edge in both directions (undirected graph)
+        adjList[u].neighbors.push_back(&adjList[v]);
+        adjList[v].neighbors.push_back(&adjList[u]);
+        numEdges++;
+        
+        return true;
+    }
+
+    bool removeEdge(int u, int v) {
+        // Check if vertices exist
+        if (adjList.find(u) == adjList.end() || adjList.find(v) == adjList.end()) {
+            return false;
+        }
+
+        // Remove v from u's neighbors
+        auto& uNeighbors = adjList[u].neighbors;
+        bool edgeFound = false;
+        
+        for (auto it = uNeighbors.begin(); it != uNeighbors.end(); ) {
+            if ((*it)->id == v) {
+                it = uNeighbors.erase(it);
+                edgeFound = true;
+            } else {
+                ++it;
+            }
+        }
+
+        // Remove u from v's neighbors
+        auto& vNeighbors = adjList[v].neighbors;
+        for (auto it = vNeighbors.begin(); it != vNeighbors.end(); ) {
+            if ((*it)->id == u) {
+                it = vNeighbors.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        if (edgeFound) {
+            numEdges--;
+            return true;
+        }
+        
+        return false;
+    }
     
     map<int, Vertex>& getAdjList() {
         return adjList;
@@ -98,6 +162,10 @@ private:
 
 public:
     Dijkstra(map<int, Vertex>& g) : graph(g) {}
+
+    void setGraph(map<int, Vertex>& g) {
+        graph = g;
+    }
 
     void initialize(int sourceId) {
         source = sourceId;
@@ -145,8 +213,7 @@ public:
             for (Vertex* neighbor : graph[u].neighbors) {
                 int v = neighbor->id;
                 
-                // For unweighted graph, weight is 1.0
-                double weight = 1.0;
+                double weight = graph[u].weight;
                 
                 // Relaxation step
                 if (!visited[v] && distances[u] + weight < distances[v]) {
@@ -217,10 +284,175 @@ public:
             cout << endl;
         }
     }
+
+    void updateSSSP(vector<pair<int, int>> insertions, vector<pair<int, int>> deletions) {
+        // Data structures for affected vertices
+        map<int, bool> affected;
+        map<int, bool> affected_del;
+        
+        // Keep track of edge changes
+        vector<pair<int, int>> edgesToProcess;
+        vector<pair<int, int>> deletedEdges;
+        vector<pair<int, int>> insertedEdges;
+        
+        // Initialize data structures
+        for (const auto& pair : graph) {
+            int vertexId = pair.first;
+            affected[vertexId] = false;
+            affected_del[vertexId] = false;
+        }
+        
+        // Algorithm 2: Identify Affected Vertices
+        // Process deleted edges
+        for (const auto& edge : deletions) {
+            int u = edge.first;
+            int v = edge.second;
+            
+            // Check if edge is in the shortest path tree
+            if (predecessors[v] == u || predecessors[u] == v) {
+                // Determine which vertex to mark as affected
+                int y;
+                if (distances[u] > distances[v]) {
+                    y = u;
+                } else {
+                    y = v;
+                }
+                
+                // Set distance to infinity and mark as affected
+                distances[y] = numeric_limits<double>::infinity();
+                affected_del[y] = true;
+                affected[y] = true;
+                
+                // Mark edge as deleted (for bookkeeping)
+                deletedEdges.push_back(edge);
+            }
+        }
+        
+        // Process inserted edges
+        for (const auto& edge : insertions) {
+            int u = edge.first;
+            int v = edge.second;
+            
+            // Determine x based on which vertex has higher distance
+            int x, y;
+            if (distances[u] > distances[v]) {
+                x = v;
+                y = u;
+            } else {
+                x = u;
+                y = v;
+            }
+            
+            // Check if the new edge provides a shorter path
+            if (distances[y] > distances[x] + graph[x].weight) {
+                distances[y] = distances[x] + graph[x].weight;
+                predecessors[y] = x;
+                affected[y] = true;
+                
+                // Add edge to the graph (if not already done)
+                insertedEdges.push_back(edge);
+            }
+        }
+        
+        // Algorithm 3: Update Affected Vertices
+        // First handle vertices affected by deletions
+        while (true) {
+            bool hasAffectedDel = false;
+            
+            // Check if there are any affected vertices
+            for (auto& pair : affected_del) {
+                if (pair.second) {
+                    hasAffectedDel = true;
+                    break;
+                }
+            }
+            
+            if (!hasAffectedDel) break;
+            
+            // Process each affected vertex (would be in parallel in the algorithm)
+            map<int, bool> toProcess;
+            for (auto& pair : affected_del) {
+                if (pair.second) {
+                    int v = pair.first;
+                    toProcess[v] = true;
+                    pair.second = false; // Reset for next iteration
+                }
+            }
+            
+            for (const auto& pair : toProcess) {
+                int v = pair.first;
+                
+                // Find all children of v in the SSSP tree
+                for (const auto& graphPair : graph) {
+                    int c = graphPair.first;
+                    
+                    // Check if c is a child of v in the tree
+                    if (predecessors[c] == v) {
+                        // Set distance to infinity
+                        distances[c] = numeric_limits<double>::infinity();
+                        affected_del[c] = true;
+                        affected[c] = true;
+                    }
+                }
+            }
+        }
+        
+        // Now handle all affected vertices
+        while (true) {
+            bool hasAffected = false;
+            
+            // Check if there are any affected vertices
+            for (auto& pair : affected) {
+                if (pair.second) {
+                    hasAffected = true;
+                    break;
+                }
+            }
+            
+            if (!hasAffected) break;
+            
+            // Process each affected vertex (would be in parallel in the algorithm)
+            map<int, bool> toProcess;
+            for (auto& pair : affected) {
+                if (pair.second) {
+                    int v = pair.first;
+                    toProcess[v] = true;
+                    pair.second = false; // Reset for next iteration
+                }
+            }
+            
+            for (const auto& pair : toProcess) {
+                int v = pair.first;
+                
+                // Check all neighbors of v
+                for (Vertex* neighbor : graph[v].neighbors) {
+                    int n = neighbor->id;
+                    double weight = graph[v].weight;
+                    
+                    // Check if we can improve the path to n through v
+                    if (distances[n] > distances[v] + weight) {
+                        distances[n] = distances[v] + weight;
+                        predecessors[n] = v;
+                        affected[n] = true;
+                    }
+                    // Or vice versa (as in Algorithm 3)
+                    else if (distances[v] > distances[n] + weight) {
+                        distances[v] = distances[n] + weight;
+                        predecessors[v] = n;
+                        affected[v] = true;
+                    }
+                }
+            }
+        }
+        
+        // Special handling for source vertex, ensure it stays at distance 0
+        distances[source] = 0.0;
+        predecessors[source] = -1;
+    }
 };
 
 // Example usage in main function
-int main(int argc, char** argv) {        
+int main() {        
     Graph graph;
     graph.buildAdjacencyList("../../graphs/initial_graph.txt");
     map<int, Vertex> results = graph.getAdjList();
@@ -231,11 +463,47 @@ int main(int argc, char** argv) {
     
     const auto& distances = dijkstra.get_distances();
     const auto& predecessors = dijkstra.get_predecessors();
+    
+    vector<pair<int, int>> insertions = {
+        {6, 11},    // Connects mid-level nodes (original 5-10)
+        {9, 17},    // Creates a shortcut (original 8-16)
+        {4, 8},     // Cross-branch link (original 3-7)
+        {1, 11},    // Root-to-mid-level jump (original 0-10)
+        {13, 25}    // Deep-level connection (original 12-24)
+    };
+    
+    vector<pair<int, int>> deletions = {
+        {1, 6},     // Root-level edge removal (original 0-5)
+        {11, 15},   // Chain breaker (original 10-14)
+        {3, 8},     // Alternative path removal (original 2-7)
+        {7, 11},    // Mid-level connection (original 6-10)
+        {17, 21}    // Deep-level removal (original 16-20)
+    };
 
-    // Print results
-    cout << "Distances from source vertex 0:" << endl;
-    for (const auto& pair : distances) {
-        cout << "To vertex " << pair.first << ": " << pair.second << endl;
+    for (const auto& insertion : insertions) {
+        int u = insertion.first;
+        int v = insertion.second;
+        graph.addEdge(u, v);
+    }
+
+    for (const auto& deletion : deletions) {
+        int u = deletion.first;
+        int v = deletion.second;
+        graph.removeEdge(u, v);
+    }
+
+    results = graph.getAdjList();
+    dijkstra.setGraph(results);
+    dijkstra.updateSSSP(insertions, deletions);
+
+    // Print results with predecessors
+    for (const auto& vertex : results) {
+        int vertexId = vertex.first;
+        cout << "Vertex " << vertexId << ": distance = " << distances.at(vertexId);
+        if (predecessors.find(vertexId) != predecessors.end()) {
+            cout << ", predecessor = " << predecessors.at(vertexId);
+        }
+        cout << endl;
     }
     
     return 0;
