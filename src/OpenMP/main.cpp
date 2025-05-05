@@ -557,17 +557,29 @@ public:
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
     map<int, int> vertexPartition;
+    omp_lock_t mapLock;
+    omp_init_lock(&mapLock);  // Initialize the lock
 
-    for (const auto& line : lines) {
-        istringstream iss(line);
+    #pragma omp parallel for
+    for (size_t i = 0; i < lines.size(); i++) {
+        istringstream iss(lines[i]);
         int partition, vertexId;
+        
         if (!(iss >> partition >> vertexId)) {
-            cerr << "Error parsing line: " << line << endl;
+            #pragma omp critical
+            {
+                cerr << "Error parsing line: " << lines[i] << endl;
+            }
             continue;
         }
+
+        // Only lock when modifying the shared map
+        omp_set_lock(&mapLock);
         vertexPartition[vertexId] = partition;
+        omp_unset_lock(&mapLock);
     }
 
+    omp_destroy_lock(&mapLock);  // Clean up the lock
     return vertexPartition;
 }
 
