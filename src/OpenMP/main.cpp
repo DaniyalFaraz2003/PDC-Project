@@ -85,7 +85,7 @@ public:
     }       
 
     void convertGraphToMetisGraph() {
-        ofstream outfile("../metis_graph/output.graph");
+        ofstream outfile("../../metis_graph/output.graph");
         if (!outfile.is_open()) {
             cerr << "Error opening output file!" << endl;
             return;
@@ -109,7 +109,7 @@ public:
     }    
     
     void applyMetisPartitioning(int size) {
-        string fileName = "../metis_graph/output.graph";
+        string fileName = "../../metis_graph/output.graph";
         string command = "gpmetis " + fileName + " " + to_string(size);
         int result = system(command.c_str());
         if (result != 0) {
@@ -120,9 +120,9 @@ public:
     }
 
     void mergeOutputGraphs(int size) {
-        string file1 = "../metis_graph/output.graph";
-        string file2 = "../metis_graph/output.graph.part." + to_string(size);
-        string mergedFile = "../metis_graph/merged_file.graph";
+        string file1 = "../../metis_graph/output.graph";
+        string file2 = "../../metis_graph/output.graph.part." + to_string(size);
+        string mergedFile = "../../metis_graph/merged_file.graph";
     
         ifstream inFile1(file1);
         ifstream inFile2(file2);
@@ -162,7 +162,7 @@ public:
     }
 
     void buildListOfVertices() {
-        string file = "../metis_graph/merged_file.graph";
+        string file = "../../metis_graph/merged_file.graph";
         ifstream inFile(file);
     
         if (!inFile.is_open()) {
@@ -242,20 +242,21 @@ private:
     // Track pending MPI requests for asynchronous communication
     vector<MPI_Request> pending_requests;
 
-    // Change send_distance_update to use the correct types
-    void send_distance_update(int vertex_id, float new_dist) {
+    // Add thread-local storage for pending requests
+    vector<vector<MPI_Request>> thread_pending_requests;
+    mutex pending_mutex;  // Mutex for updating the main pending_requests vector
+
+    void send_distance_update(int vertex_id, float new_dist, int thread_id) {
         auto it = vertex_to_partition.find(vertex_id);
         if (it == vertex_to_partition.end()) {
-            // Don't know where to send this - maybe log a warning
             return;
         }
-
+        
         int dest_rank = it->second;
         if (dest_rank == rank) {
-            // Shouldn't happen - we checked before calling
             return;
         }
-
+        
         // Pack vertex_id and distance correctly
         vector<char> buffer(sizeof(int) + sizeof(float));
         int* id_ptr = reinterpret_cast<int*>(buffer.data());
@@ -263,11 +264,13 @@ private:
         
         *id_ptr = vertex_id;
         *dist_ptr = new_dist;
-
+        
         // Send asynchronously
         MPI_Request req;
         MPI_Isend(buffer.data(), buffer.size(), MPI_CHAR, dest_rank, 0, MPI_COMM_WORLD, &req);
-        pending_requests.push_back(req);
+        
+        // Store in thread-local pending request list
+        thread_pending_requests[thread_id].push_back(req);
     }
 
     // Parallel processing of incoming messages
@@ -798,12 +801,12 @@ int main(int argc, char** argv) {
     
     if (rank == 0) {
         Graph graph;
-        graph.loadGraphFromFile("../graphs/initial_graph.txt");
+        graph.loadGraphFromFile("../../graphs/initial_graph.txt");
         graph.convertGraphToMetisGraph();
         graph.applyMetisPartitioning(size);
         graph.mergeOutputGraphs(size);
 
-        ifstream file("../metis_graph/merged_file.graph");
+        ifstream file("../../metis_graph/merged_file.graph");
         if (file.is_open()) {
             stringstream buffer;
             buffer << file.rdbuf();

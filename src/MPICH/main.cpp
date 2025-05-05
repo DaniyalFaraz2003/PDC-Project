@@ -68,7 +68,7 @@ public:
     }        
 
     void convertGraphToMetisGraph() {
-        ofstream outfile("../metis_graph/output.graph");
+        ofstream outfile("../../metis_graph/output.graph");
         if (!outfile.is_open()) {
             cerr << "Error opening output file!" << endl;
             return;
@@ -92,7 +92,7 @@ public:
     }    
     
     void applyMetisPartitioning(int size) {
-        string fileName = "../metis_graph/output.graph";
+        string fileName = "../../metis_graph/output.graph";
         string command = "gpmetis " + fileName + " " + to_string(size);
         int result = system(command.c_str());
         if (result != 0) {
@@ -103,9 +103,9 @@ public:
     }
 
     void mergeOutputGraphs(int size) {
-        string file1 = "../metis_graph/output.graph";
-        string file2 = "../metis_graph/output.graph.part." + to_string(size);
-        string mergedFile = "../metis_graph/merged_file.graph";
+        string file1 = "../../metis_graph/output.graph";
+        string file2 = "../../metis_graph/output.graph.part." + to_string(size);
+        string mergedFile = "../../metis_graph/merged_file.graph";
     
         ifstream inFile1(file1);
         ifstream inFile2(file2);
@@ -145,7 +145,7 @@ public:
     }
 
     void buildListOfVertices() {
-        string file = "../metis_graph/merged_file.graph";
+        string file = "../../../../metis_graph/merged_file.graph";
         ifstream inFile(file);
     
         if (!inFile.is_open()) {
@@ -653,12 +653,12 @@ int main(int argc, char** argv) {
     
     if (rank == 0) {
         Graph graph;
-        graph.loadGraphFromFile("../graphs/initial_graph.txt");
+        graph.loadGraphFromFile("../../graphs/initial_graph.txt");
         graph.convertGraphToMetisGraph();
         graph.applyMetisPartitioning(size);
         graph.mergeOutputGraphs(size);
 
-        ifstream file("../metis_graph/merged_file.graph");
+        ifstream file("../../metis_graph/merged_file.graph");
         if (file.is_open()) {
             stringstream buffer;
             buffer << file.rdbuf();

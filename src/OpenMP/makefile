@@ -3,7 +3,7 @@ MPICXX := mpic++
 
 # Source files and executable
 SRCS := main.cpp
-EXEC := mpi_program
+EXEC := omp_program
 
 # Compiler flags with OpenMP support
 CXXFLAGS := -Wall -O3 -std=c++17 -fopenmp
