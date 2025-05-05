@@ -528,11 +528,19 @@ public:
         
         // Debug output - counts for non-infinity distances
         int non_inf_count = 0;
-        for (const auto& [id, dist] : distance) {
-            if (dist < numeric_limits<float>::infinity()) {
-                non_inf_count++;
+
+        #pragma omp parallel reduction(+:non_inf_count)
+        {
+            auto it = distance.begin();
+            #pragma omp for schedule(static)  // Only static works with forward iterators
+            for (size_t i = 0; i < distance.size(); i++) {
+                advance(it, 1);  // Manually advance iterator
+                if (it->second < numeric_limits<float>::infinity()) {
+                    non_inf_count++;
+                }
             }
         }
+        
         cout << "Rank " << rank << " finished with " << non_inf_count << " reachable vertices" << endl;
     }
 
