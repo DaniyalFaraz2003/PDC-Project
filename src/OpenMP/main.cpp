@@ -328,10 +328,19 @@ public:
         this->rank = rank;
         this->world_size = world_size;
         this->vertex_to_partition = vertex_partition_map;
-
-        // Initialize distance map with infinity
-        for (const auto& vertex : vertices) {
-            distance[vertex.id] = numeric_limits<float>::infinity();
+        
+        // Initialize thread-local storage for pending requests
+        int max_threads = omp_get_max_threads();
+        thread_pending_requests.resize(max_threads);
+        
+        // Initialize distance map with infinity - can be parallelized
+        #pragma omp parallel for schedule(dynamic, 64)
+        for (size_t i = 0; i < vertices.size(); i++) {
+            const auto& vertex = vertices[i];
+            #pragma omp critical(distance_init)
+            {
+                distance[vertex.id] = numeric_limits<float>::infinity();
+            }
         }
     }
 
