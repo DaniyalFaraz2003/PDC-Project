@@ -455,7 +455,7 @@ public:
 
 int main() {
     Graph graph;
-    graph.buildAdjacencyList("../../graphs/p2p-Gnutella-small.txt");
+    graph.buildAdjacencyList("../../graphs/initial_graph.txt");
     map<int, Vertex> results = graph.getAdjList();
 
     Dijkstra dijkstra(results);

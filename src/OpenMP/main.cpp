@@ -1254,7 +1254,7 @@ void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, flo
     }
     
     if (!source_found) {
-        cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
+        // cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
         return;
     }
     
@@ -1311,11 +1311,10 @@ void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, flo
                 EdgeMessage msg = {target_id, source_id, weight}; // Note: reversed order
                 MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, INSERT_EDGE_TAG, MPI_COMM_WORLD);
                 
-                cout << "Rank " << myRank << ": Sent request to process " << target_process 
-                     << " to add " << source_id << " as neighbor to " << target_id << endl;
+                // cout << "Rank " << myRank << ": Sent request to process " << target_process << " to add " << source_id << " as neighbor to " << target_id << endl;
             }
         } else {
-            cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
+            // cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
         }
     }
 }
@@ -1352,7 +1351,7 @@ void removeEdgeFromVertex(vector<Vertex>& vertices, int source_id, int target_id
     }
     
     if (!source_found) {
-        cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
+        // cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
         return;
     }
     
@@ -1397,11 +1396,10 @@ void removeEdgeFromVertex(vector<Vertex>& vertices, int source_id, int target_id
                 EdgeMessage msg = {target_id, source_id, 0.0f}; // Note: reversed order, weight doesn't matter for deletion
                 MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, DELETE_EDGE_TAG, MPI_COMM_WORLD);
                 
-                cout << "Rank " << myRank << ": Sent request to process " << target_process 
-                     << " to remove " << source_id << " as neighbor from " << target_id << endl;
+                // cout << "Rank " << myRank << ": Sent request to process " << target_process << " to remove " << source_id << " as neighbor from " << target_id << endl;
             }
         } else {
-            cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
+            // cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
         }
     }
 }
@@ -1452,7 +1450,7 @@ bool processEdgeInsertions(vector<Vertex>& vertices, vector<pair<int, int>>& loc
         #pragma omp critical
         local_insertions.push_back({msg.u, msg.v});
         
-        cout << "Rank " << rank << ": Received and added edge (" << msg.u << "," << msg.v << ")" << endl;
+        // cout << "Rank " << rank << ": Received and added edge (" << msg.u << "," << msg.v << ")" << endl;
         return true;
     }
     
@@ -1477,7 +1475,7 @@ bool processEdgeDeletions(vector<Vertex>& vertices, vector<pair<int, int>>& loca
         #pragma omp critical
         local_deletions.push_back({msg.u, msg.v});
         
-        cout << "Rank " << rank << ": Received and removed edge (" << msg.u << "," << msg.v << ")" << endl;
+        // cout << "Rank " << rank << ": Received and removed edge (" << msg.u << "," << msg.v << ")" << endl;
         return true;
     }
     
@@ -1500,7 +1498,7 @@ void sendEdgeInsertions(const vector<pair<int, int>>& insertions, vector<Vertex>
             if (vertexPartitions.find(u) == vertexPartitions.end()) {
                 #pragma omp critical
                 {
-                    cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
+                    // cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
                 }
                 continue;
             }
@@ -1513,7 +1511,7 @@ void sendEdgeInsertions(const vector<pair<int, int>>& insertions, vector<Vertex>
                 
                 #pragma omp critical
                 {
-                    cout << "Rank " << rank << ": Added edge (" << u << "," << v << ") locally" << endl;
+                    // cout << "Rank " << rank << ": Added edge (" << u << "," << v << ") locally" << endl;
                 }
                 continue;
             }
@@ -1524,7 +1522,7 @@ void sendEdgeInsertions(const vector<pair<int, int>>& insertions, vector<Vertex>
             #pragma omp critical
             {
                 MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, INSERT_EDGE_TAG, MPI_COMM_WORLD);
-                cout << "Rank " << rank << ": Sent insertion request for edge (" << u << "," << v << ") to process " << target_process << endl;
+                // cout << "Rank " << rank << ": Sent insertion request for edge (" << u << "," << v << ") to process " << target_process << endl;
             }
         }
         
@@ -1552,7 +1550,7 @@ void sendEdgeDeletions(const vector<pair<int, int>>& deletions, vector<Vertex>& 
             if (vertexPartitions.find(u) == vertexPartitions.end()) {
                 #pragma omp critical
                 {
-                    cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
+                    // cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
                 }
                 continue;
             }
@@ -1565,7 +1563,7 @@ void sendEdgeDeletions(const vector<pair<int, int>>& deletions, vector<Vertex>& 
                 
                 #pragma omp critical
                 {
-                    cout << "Rank " << rank << ": Removed edge (" << u << "," << v << ") locally" << endl;
+                    // cout << "Rank " << rank << ": Removed edge (" << u << "," << v << ") locally" << endl;
                 }
                 continue;
             }
@@ -1576,7 +1574,7 @@ void sendEdgeDeletions(const vector<pair<int, int>>& deletions, vector<Vertex>& 
             #pragma omp critical
             {
                 MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, DELETE_EDGE_TAG, MPI_COMM_WORLD);
-                cout << "Rank " << rank << ": Sent deletion request for edge (" << u << "," << v << ") to process " << target_process << endl;
+                // cout << "Rank " << rank << ": Sent deletion request for edge (" << u << "," << v << ") to process " << target_process << endl;
             }
         }
         
@@ -1669,7 +1667,7 @@ void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vert
     
     if (rank == 0) {
         // Process 0 coordinates the dynamic updates
-        cout << "Rank 0: Starting dynamic updates" << endl;
+        // cout << "Rank 0: Starting dynamic updates" << endl;
         
         // Send edge insertions
         sendEdgeInsertions(all_insertions, vertices, local_insertions, vertexPartitions, rank, size);
@@ -1685,18 +1683,17 @@ void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vert
     if (rank != 0)
         receiveAndProcessEdgeUpdates(vertices, local_insertions, local_deletions, vertexPartitions, rank);
     
-    // Synchronize all processes after edge modifications before starting SSSP update
-    MPI_Barrier(MPI_COMM_WORLD);
-    
     // ===== END TIMING FOR EDGE MODIFICATIONS =====
     auto edge_end = chrono::high_resolution_clock::now();
+    
+    // Synchronize all processes after edge modifications before starting SSSP update
+    MPI_Barrier(MPI_COMM_WORLD);
     
     // ===== BEGIN TIMING FOR SSSP UPDATE =====
     auto sssp_start = chrono::high_resolution_clock::now();
     
     // After processing all edge updates, run the SSSP update algorithm
-    cout << "Rank " << rank << ": Updating SSSP with " << local_insertions.size() 
-         << " insertions and " << local_deletions.size() << " deletions" << endl;
+    // cout << "Rank " << rank << ": Updating SSSP with " << local_insertions.size() << " insertions and " << local_deletions.size() << " deletions" << endl;
          
     // Call the updateSSSP function with our collected changes
     dijkstra.updateSSSP(local_insertions, local_deletions);
@@ -1768,7 +1765,7 @@ int main(int argc, char** argv) {
     
     if (rank == 0) {
         Graph graph;
-        graph.loadGraphFromFile("../../graphs/p2p-Gnutella-small.txt");
+        graph.loadGraphFromFile("../../graphs/initial_graph.txt");
         graph.convertGraphToMetisGraph();
         graph.applyMetisPartitioning(size);
         graph.mergeOutputGraphs(size);

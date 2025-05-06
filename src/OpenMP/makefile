@@ -12,7 +12,7 @@ CXXFLAGS := -Wall -O3 -std=c++17 -fopenmp
 PROCS ?= 4
 
 # Default number of OpenMP threads per process
-THREADS ?= 4
+THREADS ?= 128
 
 .PHONY: all clean run
 
