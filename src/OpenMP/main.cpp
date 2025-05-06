@@ -15,8 +15,9 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <chrono>
 
-#define NUM_THREADS 128
+#define NUM_THREADS 256
 
 using namespace std;
 
@@ -1636,7 +1637,7 @@ void receiveAndProcessEdgeUpdates(vector<Vertex>& vertices, vector<pair<int, int
     }
 }
 
-// Function to perform dynamic graph updates
+// Function to perform dynamic graph updates with timing
 void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vertices, 
                                map<int, int>& vertexPartitions, int rank, int size) {
     // Predefined insertions and deletions (similar to the serial version)
@@ -1660,6 +1661,12 @@ void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vert
     vector<pair<int, int>> local_insertions;
     vector<pair<int, int>> local_deletions;
     
+    // Synchronize all processes before starting timing
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    // ===== BEGIN TIMING FOR TOTAL UPDATE PROCESS =====
+    auto total_start = chrono::high_resolution_clock::now();
+    
     if (rank == 0) {
         // Process 0 coordinates the dynamic updates
         cout << "Rank 0: Starting dynamic updates" << endl;
@@ -1678,6 +1685,15 @@ void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vert
     if (rank != 0)
         receiveAndProcessEdgeUpdates(vertices, local_insertions, local_deletions, vertexPartitions, rank);
     
+    // Synchronize all processes after edge modifications before starting SSSP update
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    // ===== END TIMING FOR EDGE MODIFICATIONS =====
+    auto edge_end = chrono::high_resolution_clock::now();
+    
+    // ===== BEGIN TIMING FOR SSSP UPDATE =====
+    auto sssp_start = chrono::high_resolution_clock::now();
+    
     // After processing all edge updates, run the SSSP update algorithm
     cout << "Rank " << rank << ": Updating SSSP with " << local_insertions.size() 
          << " insertions and " << local_deletions.size() << " deletions" << endl;
@@ -1685,9 +1701,60 @@ void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vert
     // Call the updateSSSP function with our collected changes
     dijkstra.updateSSSP(local_insertions, local_deletions);
     
-    // Wait for all processes to finish their updates
+    // ===== END TIMING FOR SSSP UPDATE =====
+    auto sssp_end = chrono::high_resolution_clock::now();
+    
+    // Synchronize all processes after SSSP update
     MPI_Barrier(MPI_COMM_WORLD);
+    
+    // ===== END TIMING FOR TOTAL UPDATE PROCESS =====
+    auto total_end = chrono::high_resolution_clock::now();
+    
+    // Calculate durations in milliseconds
+    auto total_duration = chrono::duration_cast<chrono::milliseconds>(total_end - total_start).count();
+    auto edge_duration = chrono::duration_cast<chrono::milliseconds>(edge_end - total_start).count();
+    auto sssp_duration = chrono::duration_cast<chrono::milliseconds>(sssp_end - sssp_start).count();
+    
+    // Local timing results
+    cout << "\nPerformance Metrics for Rank " << rank << ":\n";
+    cout << "Total update time: " << total_duration << " ms\n";
+    cout << "Edge modification time: " << edge_duration << " ms\n";
+    cout << "SSSP update time: " << sssp_duration << " ms\n";
+    
+    // Collect timing statistics from all processes
+    long max_total_time = 0;
+    long max_edge_time = 0;
+    long max_sssp_time = 0;
+    long sum_total_time = 0;
+    long sum_edge_time = 0;
+    long sum_sssp_time = 0;
+    
+    // Use MPI_Reduce to get the maximum and sum of each timing metric
+    MPI_Reduce(&total_duration, &max_total_time, 1, MPI_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&edge_duration, &max_edge_time, 1, MPI_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&sssp_duration, &max_sssp_time, 1, MPI_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    
+    MPI_Reduce(&total_duration, &sum_total_time, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&edge_duration, &sum_edge_time, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&sssp_duration, &sum_sssp_time, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    
+    // Only rank 0 reports the global timing results
+    if (rank == 0) {
+        long avg_total_time = sum_total_time / size;
+        long avg_edge_time = sum_edge_time / size;
+        long avg_sssp_time = sum_sssp_time / size;
+        
+        cout << "\n===== GLOBAL PERFORMANCE METRICS =====\n";
+        cout << "Maximum total update time across all processes: " << max_total_time << " ms\n";
+        cout << "Maximum edge modification time across all processes: " << max_edge_time << " ms\n";
+        cout << "Maximum SSSP update time across all processes: " << max_sssp_time << " ms\n";
+        
+        cout << "\nAverage total update time across all processes: " << avg_total_time << " ms\n";
+        cout << "Average edge modification time across all processes: " << avg_edge_time << " ms\n";
+        cout << "Average SSSP update time across all processes: " << avg_sssp_time << " ms\n";
+    }
 }
+
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -1701,7 +1768,7 @@ int main(int argc, char** argv) {
     
     if (rank == 0) {
         Graph graph;
-        graph.loadGraphFromFile("../../graphs/initial_graph.txt");
+        graph.loadGraphFromFile("../../graphs/p2p-Gnutella-small.txt");
         graph.convertGraphToMetisGraph();
         graph.applyMetisPartitioning(size);
         graph.mergeOutputGraphs(size);
@@ -1772,13 +1839,13 @@ int main(int argc, char** argv) {
     const auto& predecessors = dijkstra.get_predecessors();
 
     // Print local results
-    for (const auto& vertex : listOfVertices) {
-        cout << "Rank " << rank << " - Vertex " << vertex.id << ": distance = " << distances.at(vertex.id);
-        if (predecessors.find(vertex.id) != predecessors.end()) {
-            cout << ", predecessor = " << predecessors.at(vertex.id);
-        }
-        cout << endl;
-    }
+    // for (const auto& vertex : listOfVertices) {
+    //     cout << "Rank " << rank << " - Vertex " << vertex.id << ": distance = " << distances.at(vertex.id);
+    //     if (predecessors.find(vertex.id) != predecessors.end()) {
+    //         cout << ", predecessor = " << predecessors.at(vertex.id);
+    //     }
+    //     cout << endl;
+    // }
     
     MPI_Finalize();
     return 0;

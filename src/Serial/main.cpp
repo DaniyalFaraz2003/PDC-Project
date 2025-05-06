@@ -6,6 +6,8 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
+
 using namespace std;
 
 struct Vertex {
@@ -451,10 +453,9 @@ public:
     }
 };
 
-// Example usage in main function
-int main() {        
+int main() {
     Graph graph;
-    graph.buildAdjacencyList("../../graphs/initial_graph.txt");
+    graph.buildAdjacencyList("../../graphs/p2p-Gnutella-small.txt");
     map<int, Vertex> results = graph.getAdjList();
 
     Dijkstra dijkstra(results);
@@ -480,6 +481,10 @@ int main() {
         {17, 21}    // Deep-level removal (original 16-20)
     };
 
+    // Start timing for TOTAL update process
+    auto total_start = chrono::high_resolution_clock::now();
+
+    // Edge modifications
     for (const auto& insertion : insertions) {
         int u = insertion.first;
         int v = insertion.second;
@@ -492,19 +497,41 @@ int main() {
         graph.removeEdge(u, v);
     }
 
+    // Get updated graph
     results = graph.getAdjList();
     dijkstra.setGraph(results);
+
+    // Start timing for JUST the SSSP update
+    auto sssp_start = chrono::high_resolution_clock::now();
+    
+    // Perform SSSP update
     dijkstra.updateSSSP(insertions, deletions);
+    
+    // End timing for SSSP update
+    auto sssp_end = chrono::high_resolution_clock::now();
+    
+    // End timing for TOTAL update
+    auto total_end = chrono::high_resolution_clock::now();
+
+    // Calculate durations
+    auto total_duration = chrono::duration_cast<chrono::microseconds>(total_end - total_start);
+    auto sssp_duration = chrono::duration_cast<chrono::microseconds>(sssp_end - sssp_start);
+
+    // Print timing results
+    cout << "\nPerformance Metrics:\n";
+    cout << "Total update time (edge modifications + SSSP): " << total_duration.count() << " μs\n";
+    cout << "SSSP update time only: " << sssp_duration.count() << " μs\n";
+    cout << "Edge modification time: " << (total_duration.count() - sssp_duration.count()) << " μs\n";
 
     // Print results with predecessors
-    for (const auto& vertex : results) {
-        int vertexId = vertex.first;
-        cout << "Vertex " << vertexId << ": distance = " << distances.at(vertexId);
-        if (predecessors.find(vertexId) != predecessors.end()) {
-            cout << ", predecessor = " << predecessors.at(vertexId);
-        }
-        cout << endl;
-    }
+    // for (const auto& vertex : results) {
+    //     int vertexId = vertex.first;
+    //     cout << "Vertex " << vertexId << ": distance = " << distances.at(vertexId);
+    //     if (predecessors.find(vertexId) != predecessors.end()) {
+    //         cout << ", predecessor = " << predecessors.at(vertexId);
+    //     }
+    //     cout << endl;
+    // }
     
     return 0;
 }
