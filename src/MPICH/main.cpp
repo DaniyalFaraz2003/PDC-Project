@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <limits>
 #include <algorithm>
+#include <unistd.h>
 
 using namespace std;
 
@@ -454,222 +455,124 @@ public:
         return predecessor;
     }
 
-    // Algorithm 1: Updating SSSP for a Single Change
-    void single_change_update(int u, int v, float new_weight, bool is_inserted) {
-        // Find the affected vertex x
-        int x;
-        if (distance.find(u) == distance.end() || distance.find(v) == distance.end()) {
-            // One of the vertices is not known to this process
-            return;
+    void updateSSSP(vector<pair<int, int>> insertions, vector<pair<int, int>> deletions) {
+        // Data structures for affected vertices
+        unordered_map<int, bool> affected;
+        unordered_map<int, bool> affected_del;
+        
+        // Initialize data structures for all known vertices
+        for (const auto& [vertex_id, dist] : distance) {
+            affected[vertex_id] = false;
+            affected_del[vertex_id] = false;
         }
         
-        if (distance[u] > distance[v]) {
-            x = v;
-        } else {
-            x = u;
-        }
+        // Vector to track vertices that need updates sent to other processes
+        vector<pair<int, float>> updates_to_send;
         
-        // Initialize Priority Queue with x
-        priority_queue<QueueElement, vector<QueueElement>, greater<QueueElement>> local_pq;
-        local_pq.push({distance[x], x});
-        
-        // Update distance for x if edge is inserted
-        if (is_inserted) {
-            if (x == v && distance[u] + new_weight < distance[v]) {
-                distance[v] = distance[u] + new_weight;
-                predecessor[v] = u;
-                local_pq.push({distance[v], v});
-            } else if (x == u && distance[v] + new_weight < distance[u]) {
-                distance[u] = distance[v] + new_weight;
-                predecessor[u] = v;
-                local_pq.push({distance[u], u});
-            }
-        } else { // Edge is deleted
-            // For deletion, we need to identify all affected vertices
-            // We'll call identify_affected_vertices function
-            vector<int> affected_vertices = identify_affected_vertices(u, v);
+        // Process deleted edges first
+        for (const auto& edge : deletions) {
+            int u = edge.first;
+            int v = edge.second;
             
-            // Reset distances for affected vertices to infinity
-            for (int vertex : affected_vertices) {
-                if (vertex_to_partition[vertex] == rank) {
-                    distance[vertex] = numeric_limits<float>::infinity();
-                    local_pq.push({distance[vertex], vertex});
-                }
-            }
-        }
-        
-        // Process the queue to update affected subgraph
-        while (!local_pq.empty()) {
-            auto current = local_pq.top();
-            local_pq.pop();
-            int z = current.second;
-            float current_dist = current.first;
-            
-            // Find the vertex in our local list
-            bool is_local = false;
-            Vertex* vertex_ptr = nullptr;
-            for (auto& v : vertices) {
-                if (v.id == z) {
-                    vertex_ptr = &v;
-                    is_local = true;
-                    break;
-                }
+            // Skip if we don't know about these vertices
+            if (distance.find(u) == distance.end() || distance.find(v) == distance.end()) {
+                continue;
             }
             
-            if (!is_local) {
-                continue; // Skip non-local vertices
-            }
-            
-            bool updated = false;
-            
-            // Relax all edges from z
-            for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
-                int neighbor = vertex_ptr->neighbors[i].id;
-                float weight = vertex_ptr->weights[i];
-                float new_dist = current_dist + weight;
+            // Check if edge is in the shortest path tree (using predecessor)
+            if ((predecessor.find(v) != predecessor.end() && predecessor[v] == u) || 
+                (predecessor.find(u) != predecessor.end() && predecessor[u] == v)) {
                 
-                if (new_dist < distance[neighbor]) {
-                    distance[neighbor] = new_dist;
-                    predecessor[neighbor] = z;
-                    updated = true;
-                    
-                    // Check if neighbor is local or remote
-                    auto it = vertex_to_partition.find(neighbor);
-                    if (it != vertex_to_partition.end() && it->second == rank) {
-                        // Local vertex - add to priority queue
-                        local_pq.push({new_dist, neighbor});
-                    } else {
-                        // Remote vertex - send update to owning process
-                        send_distance_update(neighbor, new_dist);
-                    }
+                // Determine which vertex to mark as affected (the one with higher distance)
+                int y = (distance[u] > distance[v]) ? u : v;
+                
+                // Set distance to infinity and mark as affected
+                distance[y] = numeric_limits<float>::infinity();
+                affected_del[y] = true;
+                affected[y] = true;
+                
+                // If this is a local vertex, we'll need to propagate this change
+                auto it = vertex_to_partition.find(y);
+                if (it != vertex_to_partition.end() && it->second == rank) {
+                    updates_to_send.push_back({y, numeric_limits<float>::infinity()});
                 }
             }
         }
-    }
-
-    // Algorithm 2: Identify Affected Vertices
-    vector<int> identify_affected_vertices(int u, int v) {
-        vector<int> affected_vertices;
-        unordered_map<int, bool> affected_map;
         
-        // Initialize affected vertices
-        affected_map[v] = true;
-        affected_vertices.push_back(v);
-        
-        // For each vertex in our partition
-        for (auto& vertex : vertices) {
-            int vertex_id = vertex.id;
+        // Process inserted edges
+        for (const auto& edge : insertions) {
+            int u = edge.first;
+            int v = edge.second;
             
-            // Check if this vertex is affected by the edge deletion
-            if (predecessor[vertex_id] == u && vertex_id == v) {
-                // This vertex used the deleted edge directly
-                distance[vertex_id] = numeric_limits<float>::infinity();
-                affected_map[vertex_id] = true;
-                affected_vertices.push_back(vertex_id);
+            // Skip if we don't know about these vertices
+            if (distance.find(u) == distance.end() || distance.find(v) == distance.end()) {
+                continue;
             }
             
-            // Process affected vertices in a BFS manner
-            for (size_t i = 0; i < affected_vertices.size(); i++) {
-                int affected_id = affected_vertices[i];
-                
-                // Find children of this affected vertex
-                for (auto& v : vertices) {
-                    if (predecessor[v.id] == affected_id) {
-                        // This vertex is a child of an affected vertex
-                        distance[v.id] = numeric_limits<float>::infinity();
-                        if (!affected_map[v.id]) {
-                            affected_map[v.id] = true;
-                            affected_vertices.push_back(v.id);
+            // Find the vertex with lower distance (x) and higher distance (y)
+            int x, y;
+            if (distance[u] > distance[v]) {
+                x = v;
+                y = u;
+            } else {
+                x = u;
+                y = v;
+            }
+            
+            // Find the weight of the edge from x to y
+            float weight = 0.0f;
+            
+            // Try to find vertex x in our local vertices
+            for (const auto& vertex : vertices) {
+                if (vertex.id == x) {
+                    // Look for neighbor y
+                    for (size_t i = 0; i < vertex.neighbors.size(); ++i) {
+                        if (vertex.neighbors[i].id == y) {
+                            weight = vertex.weights[i];
+                            break;
                         }
                     }
-                }
-            }
-        }
-        
-        return affected_vertices;
-    }
-
-    // Algorithm 3: Update Affected Vertices
-    void update_affected_vertices(const vector<int>& affected_vertices) {
-        // Create a priority queue with all non-affected vertices
-        priority_queue<QueueElement, vector<QueueElement>, greater<QueueElement>> local_pq;
-        
-        // Add all vertices with known distances that weren't affected
-        for (const auto& [id, dist] : distance) {
-            if (dist < numeric_limits<float>::infinity() && 
-                find(affected_vertices.begin(), affected_vertices.end(), id) == affected_vertices.end()) {
-                local_pq.push({dist, id});
-            }
-        }
-        
-        // Process the queue to update affected vertices
-        while (!local_pq.empty()) {
-            auto current = local_pq.top();
-            local_pq.pop();
-            int z = current.second;
-            float current_dist = current.first;
-            
-            // Find the vertex in our local list
-            bool is_local = false;
-            Vertex* vertex_ptr = nullptr;
-            for (auto& v : vertices) {
-                if (v.id == z) {
-                    vertex_ptr = &v;
-                    is_local = true;
                     break;
                 }
             }
             
-            if (!is_local) {
-                continue; // Skip non-local vertices
+            // If weight is 0, we might not have found the edge locally
+            if (weight == 0.0f) {
+                // For simplicity, we'll use MPI to gather the weight from other processes
+                // This is a simplified approach - a more optimized version would batch these requests
+                float local_weight = weight;
+                MPI_Allreduce(&local_weight, &weight, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+                
+                // If still 0, this edge might not exist in any process
+                if (weight == 0.0f) {
+                    continue;
+                }
             }
             
-            // Relax all edges from z
-            for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
-                int neighbor = vertex_ptr->neighbors[i].id;
-                float weight = vertex_ptr->weights[i];
-                float new_dist = current_dist + weight;
+            // Check if the new edge provides a shorter path
+            if (distance[y] > distance[x] + weight) {
+                distance[y] = distance[x] + weight;
+                predecessor[y] = x;
+                affected[y] = true;
                 
-                // Check if we're improving the distance
-                if (new_dist < distance[neighbor]) {
-                    distance[neighbor] = new_dist;
-                    predecessor[neighbor] = z;
-                    
-                    // Check if neighbor is local or remote
-                    auto it = vertex_to_partition.find(neighbor);
-                    if (it != vertex_to_partition.end() && it->second == rank) {
-                        // Local vertex - add to priority queue
-                        local_pq.push({new_dist, neighbor});
-                    } else {
-                        // Remote vertex - send update to owning process
-                        send_distance_update(neighbor, new_dist);
-                    }
+                // If this is a local vertex, we'll need to propagate this change
+                auto it = vertex_to_partition.find(y);
+                if (it != vertex_to_partition.end() && it->second == rank) {
+                    updates_to_send.push_back({y, distance[y]});
                 }
             }
         }
-    }
-
-    // Main dynamic SSSP update function
-    void update_edge(int u, int v, float new_weight, bool is_inserted) {
-        // First, synchronize with all processes
-        MPI_Barrier(MPI_COMM_WORLD);
         
-        if (rank == 0) {
-            cout << "Updating edge (" << u << ", " << v << ") with weight " 
-                << new_weight << ", operation: " << (is_inserted ? "insert" : "delete") << endl;
+        // Send initial updates to other processes
+        for (const auto& [vertex_id, new_dist] : updates_to_send) {
+            // For each process that might need this update
+            for (int p = 0; p < world_size; ++p) {
+                if (p != rank) {
+                    send_distance_update(vertex_id, new_dist);
+                }
+            }
         }
-        
-        // For edge insertion, use single_change_update directly
-        if (is_inserted) {
-            single_change_update(u, v, new_weight, true);
-        } else {
-            // For edge deletion, we need to:
-            // 1. Identify affected vertices
-            vector<int> affected_vertices = identify_affected_vertices(u, v);
-            
-            // 2. Update affected vertices
-            update_affected_vertices(affected_vertices);
-        }
+        updates_to_send.clear();
         
         // Wait for all pending communications to complete
         if (!pending_requests.empty()) {
@@ -677,7 +580,165 @@ public:
             pending_requests.clear();
         }
         
-        // Synchronize again once update is complete
+        // Process any incoming messages
+        process_incoming_messages();
+        
+        // Algorithm 3: Update Affected Vertices in parallel
+        // First handle vertices affected by deletions
+        bool global_has_affected_del = true;
+        while (global_has_affected_del) {
+            bool local_has_affected_del = false;
+            
+            // Check if there are any locally affected vertices
+            for (auto& [vertex_id, is_affected] : affected_del) {
+                if (is_affected) {
+                    local_has_affected_del = true;
+                    break;
+                }
+            }
+            
+            // Check if any process has affected vertices
+            MPI_Allreduce(&local_has_affected_del, &global_has_affected_del, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD);
+            
+            if (!global_has_affected_del) break;
+            
+            // Process each locally affected vertex
+            for (auto& [vertex_id, is_affected] : affected_del) {
+                if (is_affected) {
+                    is_affected = false; // Reset for next iteration
+                    
+                    // Find all children of vertex_id in the SSSP tree (vertices where vertex_id is the predecessor)
+                    for (const auto& vertex : vertices) {
+                        for (const auto& [child_id, pred] : predecessor) {
+                            if (pred == vertex_id) {
+                                // Mark child as affected
+                                distance[child_id] = numeric_limits<float>::infinity();
+                                affected_del[child_id] = true;
+                                affected[child_id] = true;
+                                
+                                // Send update to other processes
+                                updates_to_send.push_back({child_id, numeric_limits<float>::infinity()});
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Send updates to other processes
+            for (const auto& [vertex_id, new_dist] : updates_to_send) {
+                // For each process that might need this update
+                for (int p = 0; p < world_size; ++p) {
+                    if (p != rank) {
+                        send_distance_update(vertex_id, new_dist);
+                    }
+                }
+            }
+            updates_to_send.clear();
+            
+            // Wait for all pending communications to complete
+            if (!pending_requests.empty()) {
+                MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+                pending_requests.clear();
+            }
+            
+            // Process any incoming messages
+            process_incoming_messages();
+        }
+        
+        // Now handle all affected vertices
+        bool global_has_affected = true;
+        while (global_has_affected) {
+            bool local_has_affected = false;
+            
+            // Check if there are any locally affected vertices
+            for (auto& [vertex_id, is_affected] : affected) {
+                if (is_affected) {
+                    local_has_affected = true;
+                    break;
+                }
+            }
+            
+            // Check if any process has affected vertices
+            MPI_Allreduce(&local_has_affected, &global_has_affected, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD);
+            
+            if (!global_has_affected) break;
+            
+            // Process each locally affected vertex
+            for (auto& [vertex_id, is_affected] : affected) {
+                if (is_affected) {
+                    is_affected = false; // Reset for next iteration
+                    
+                    // Find the vertex in our local list
+                    Vertex* vertex_ptr = nullptr;
+                    for (auto& v : vertices) {
+                        if (v.id == vertex_id) {
+                            vertex_ptr = &v;
+                            break;
+                        }
+                    }
+                    
+                    // Skip if we don't have this vertex locally
+                    if (!vertex_ptr) continue;
+                    
+                    // Check all neighbors of vertex_id
+                    for (size_t i = 0; i < vertex_ptr->neighbors.size(); ++i) {
+                        int neighbor_id = vertex_ptr->neighbors[i].id;
+                        float weight = vertex_ptr->weights[i];
+                        
+                        // Check if we can improve the path to neighbor through vertex_id
+                        if (distance[neighbor_id] > distance[vertex_id] + weight) {
+                            distance[neighbor_id] = distance[vertex_id] + weight;
+                            predecessor[neighbor_id] = vertex_id;
+                            affected[neighbor_id] = true;
+                            
+                            // Send update to other processes
+                            updates_to_send.push_back({neighbor_id, distance[neighbor_id]});
+                        }
+                        // Or vice versa
+                        else if (distance[vertex_id] > distance[neighbor_id] + weight) {
+                            distance[vertex_id] = distance[neighbor_id] + weight;
+                            predecessor[vertex_id] = neighbor_id;
+                            affected[vertex_id] = true;
+                            
+                            // Send update to other processes
+                            updates_to_send.push_back({vertex_id, distance[vertex_id]});
+                        }
+                    }
+                }
+            }
+            
+            // Send updates to other processes
+            for (const auto& [vertex_id, new_dist] : updates_to_send) {
+                // For each process that might need this update
+                for (int p = 0; p < world_size; ++p) {
+                    if (p != rank) {
+                        send_distance_update(vertex_id, new_dist);
+                    }
+                }
+            }
+            updates_to_send.clear();
+            
+            // Wait for all pending communications to complete
+            if (!pending_requests.empty()) {
+                MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+                pending_requests.clear();
+            }
+            
+            // Process any incoming messages
+            process_incoming_messages();
+        }
+        
+        // Ensure source vertex has distance 0 and no predecessor
+        auto source_it = vertex_to_partition.begin();
+        while (source_it != vertex_to_partition.end()) {
+            if (distance[source_it->first] == 0.0f) {
+                predecessor[source_it->first] = -1;
+                break;
+            }
+            ++source_it;
+        }
+        
+        // Final global synchronization to ensure all processes have consistent state
         MPI_Barrier(MPI_COMM_WORLD);
     }
 };
@@ -862,6 +923,390 @@ bool testPartition(vector<Vertex>& listOfVertices, int rank, int numProcesses) {
     return allGood;
 }
 
+// Constants for MPI message tags
+const int INSERT_EDGE_TAG = 100;
+const int DELETE_EDGE_TAG = 200;
+const int UPDATE_COMPLETE_TAG = 300;
+const int EXIT_LOOP_TAG = 400;
+
+// Structure for sending edge information
+struct EdgeMessage {
+    int u;      // First vertex
+    int v;      // Second vertex
+    float weight; // Edge weight (default to 1.0 if not specified)
+};
+
+// Helper function to add an edge to a vertex in the local vertex list
+void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, float weight, 
+                    const map<int, int>& vertexPartitions, int myRank) {
+    // First, handle the source vertex which we know belongs to this process
+    bool source_found = false;
+    for (auto& vertex : vertices) {
+        if (vertex.id == source_id) {
+            // Check if edge already exists
+            bool edge_exists = false;
+            for (size_t i = 0; i < vertex.neighbors.size(); i++) {
+                if (vertex.neighbors[i].id == target_id) {
+                    // Edge already exists, update weight
+                    vertex.weights[i] = weight;
+                    edge_exists = true;
+                    break;
+                }
+            }
+            
+            // If edge doesn't exist, add it
+            if (!edge_exists) {
+                // Create a temporary vertex for the neighbor
+                Vertex target_vertex;
+                target_vertex.id = target_id;
+                
+                // Find the partition ID for this vertex if known
+                if (vertexPartitions.find(target_id) != vertexPartitions.end()) {
+                    target_vertex.partitionId = vertexPartitions.at(target_id);
+                } else {
+                    target_vertex.partitionId = -1; // Unknown partition
+                }
+                
+                vertex.neighbors.push_back(target_vertex);
+                vertex.weights.push_back(weight);
+            }
+            
+            source_found = true;
+            break;
+        }
+    }
+    
+    if (!source_found) {
+        cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
+        return;
+    }
+    
+    // Now handle the target vertex
+    // First check if we have the target vertex locally
+    bool target_found = false;
+    for (auto& vertex : vertices) {
+        if (vertex.id == target_id) {
+            // Check if edge already exists in reverse direction
+            bool edge_exists = false;
+            for (size_t i = 0; i < vertex.neighbors.size(); i++) {
+                if (vertex.neighbors[i].id == source_id) {
+                    // Edge already exists, update weight
+                    vertex.weights[i] = weight;
+                    edge_exists = true;
+                    break;
+                }
+            }
+            
+            // If edge doesn't exist, add it
+            if (!edge_exists) {
+                // Create a temporary vertex for the neighbor
+                Vertex source_vertex;
+                source_vertex.id = source_id;
+                source_vertex.partitionId = myRank; // We know this vertex belongs to current process
+                
+                vertex.neighbors.push_back(source_vertex);
+                vertex.weights.push_back(weight);
+            }
+            
+            target_found = true;
+            break;
+        }
+    }
+    
+    // If target vertex is not local, send MPI message to the appropriate process
+    if (!target_found) {
+        // Find which process owns target vertex
+        if (vertexPartitions.find(target_id) != vertexPartitions.end()) {
+            int target_process = vertexPartitions.at(target_id);
+            
+            // Don't send to ourselves
+            if (target_process != myRank) {
+                // Create and send a message to add source_id as neighbor to target_id
+                EdgeMessage msg = {target_id, source_id, weight}; // Note: reversed order
+                MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, INSERT_EDGE_TAG, MPI_COMM_WORLD);
+                
+                cout << "Rank " << myRank << ": Sent request to process " << target_process 
+                     << " to add " << source_id << " as neighbor to " << target_id << endl;
+            }
+        } else {
+            cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
+        }
+    }
+}
+
+// Helper function to remove an edge from a vertex in the local vertex list
+void removeEdgeFromVertex(vector<Vertex>& vertices, int source_id, int target_id, 
+                         const map<int, int>& vertexPartitions, int myRank) {
+    // First, handle the source vertex which we know belongs to this process
+    bool source_found = false;
+    for (auto& vertex : vertices) {
+        if (vertex.id == source_id) {
+            // Find and remove the edge from source to target
+            for (size_t i = 0; i < vertex.neighbors.size(); i++) {
+                if (vertex.neighbors[i].id == target_id) {
+                    // Found the neighbor to remove
+                    vertex.neighbors.erase(vertex.neighbors.begin() + i);
+                    vertex.weights.erase(vertex.weights.begin() + i);
+                    break;
+                }
+            }
+            
+            source_found = true;
+            break;
+        }
+    }
+    
+    if (!source_found) {
+        cerr << "Error: Source vertex " << source_id << " not found in process " << myRank << endl;
+        return;
+    }
+    
+    // Now handle the target vertex
+    // First check if we have the target vertex locally
+    bool target_found = false;
+    for (auto& vertex : vertices) {
+        if (vertex.id == target_id) {
+            // Find and remove the edge from target to source
+            for (size_t i = 0; i < vertex.neighbors.size(); i++) {
+                if (vertex.neighbors[i].id == source_id) {
+                    // Found the neighbor to remove
+                    vertex.neighbors.erase(vertex.neighbors.begin() + i);
+                    vertex.weights.erase(vertex.weights.begin() + i);
+                    break;
+                }
+            }
+            
+            target_found = true;
+            break;
+        }
+    }
+    
+    // If target vertex is not local, send MPI message to the appropriate process
+    if (!target_found) {
+        // Find which process owns target vertex
+        if (vertexPartitions.find(target_id) != vertexPartitions.end()) {
+            int target_process = vertexPartitions.at(target_id);
+            
+            // Don't send to ourselves
+            if (target_process != myRank) {
+                // Create and send a message to remove source_id as neighbor from target_id
+                EdgeMessage msg = {target_id, source_id, 0.0f}; // Note: reversed order, weight doesn't matter for deletion
+                MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, DELETE_EDGE_TAG, MPI_COMM_WORLD);
+                
+                cout << "Rank " << myRank << ": Sent request to process " << target_process 
+                     << " to remove " << source_id << " as neighbor from " << target_id << endl;
+            }
+        } else {
+            cerr << "Warning: Target vertex " << target_id << " not found in partition map" << endl;
+        }
+    }
+}
+
+// Function to signal end of updates to all processes
+void signalEndOfUpdates(int size) {
+    for (int p = 1; p < size; p++) {
+        int signal = 1;
+        MPI_Send(&signal, 1, MPI_INT, p, EXIT_LOOP_TAG, MPI_COMM_WORLD);
+    }
+}
+
+// Function to check for exit signal
+bool checkForExitSignal() {
+    MPI_Status status;
+    int flag = 0;
+    
+    MPI_Iprobe(MPI_ANY_SOURCE, EXIT_LOOP_TAG, MPI_COMM_WORLD, &flag, &status);
+    
+    if (flag) {
+        int signal;
+        MPI_Recv(&signal, 1, MPI_INT, status.MPI_SOURCE, EXIT_LOOP_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        return true;
+    }
+    
+    return false;
+}
+
+// Function to process edge insertions
+bool processEdgeInsertions(vector<Vertex>& vertices, vector<pair<int, int>>& local_insertions, 
+                          const map<int, int>& vertexPartitions, int rank) {
+    MPI_Status status;
+    int flag = 0;
+    
+    MPI_Iprobe(MPI_ANY_SOURCE, INSERT_EDGE_TAG, MPI_COMM_WORLD, &flag, &status);
+    
+    if (flag) {
+        EdgeMessage msg;
+        MPI_Recv(&msg, sizeof(EdgeMessage), MPI_BYTE, status.MPI_SOURCE, INSERT_EDGE_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // Process the edge insertion locally
+        addEdgeToVertex(vertices, msg.u, msg.v, msg.weight, vertexPartitions, rank);
+        local_insertions.push_back({msg.u, msg.v});
+        
+        cout << "Rank " << rank << ": Received and added edge (" << msg.u << "," << msg.v << ")" << endl;
+        return true;
+    }
+    
+    return false;
+}
+
+// Function to process edge deletions
+bool processEdgeDeletions(vector<Vertex>& vertices, vector<pair<int, int>>& local_deletions, 
+                         const map<int, int>& vertexPartitions, int rank) {
+    MPI_Status status;
+    int flag = 0;
+    
+    MPI_Iprobe(MPI_ANY_SOURCE, DELETE_EDGE_TAG, MPI_COMM_WORLD, &flag, &status);
+    
+    if (flag) {
+        EdgeMessage msg;
+        MPI_Recv(&msg, sizeof(EdgeMessage), MPI_BYTE, status.MPI_SOURCE, DELETE_EDGE_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        
+        // Process the edge deletion locally
+        removeEdgeFromVertex(vertices, msg.u, msg.v, vertexPartitions, rank);
+        local_deletions.push_back({msg.u, msg.v});
+        
+        cout << "Rank " << rank << ": Received and removed edge (" << msg.u << "," << msg.v << ")" << endl;
+        return true;
+    }
+    
+    return false;
+}
+
+// Function to send edge insertions from coordinator to appropriate processes
+void sendEdgeInsertions(const vector<pair<int, int>>& insertions, vector<Vertex>& vertices, 
+                       vector<pair<int, int>>& local_insertions, const map<int, int>& vertexPartitions, int rank, int size) {
+    for (const auto& insertion : insertions) {
+        int u = insertion.first;
+        int v = insertion.second;
+        
+        // Find which process owns vertex u
+        if (vertexPartitions.find(u) == vertexPartitions.end()) {
+            cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
+            continue;
+        }
+        
+        int target_process = vertexPartitions.at(u);
+
+        if (target_process == rank) {
+            addEdgeToVertex(vertices, u, v, 1.0f, vertexPartitions, rank); // Using default weight of 1.0
+            local_insertions.push_back({u, v});
+            cout << "Rank " << rank << ": Added edge (" << u << "," << v << ") locally" << endl;
+            continue;
+        }
+        
+        // Create and send the message
+        EdgeMessage msg = {u, v, 1.0f}; // Using default weight of 1.0
+        MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, INSERT_EDGE_TAG, MPI_COMM_WORLD);
+        
+        cout << "Rank " << rank << ": Sent insertion request for edge (" << u << "," << v << ") to process " << target_process << endl;
+    }
+}
+
+// Function to send edge deletions from coordinator to appropriate processes
+void sendEdgeDeletions(const vector<pair<int, int>>& deletions, vector<Vertex>& vertices, 
+                      vector<pair<int, int>>& local_deletions, const map<int, int>& vertexPartitions, int rank, int size) {
+    for (const auto& deletion : deletions) {
+        int u = deletion.first;
+        int v = deletion.second;
+        
+        // Find which process owns vertex u
+        if (vertexPartitions.find(u) == vertexPartitions.end()) {
+            cerr << "Warning: Vertex " << u << " not found in partition map" << endl;
+            continue;
+        }
+        
+        int target_process = vertexPartitions.at(u);
+
+        if (target_process == rank) {
+            removeEdgeFromVertex(vertices, u, v, vertexPartitions, rank);
+            local_deletions.push_back({u, v});
+            cout << "Rank " << rank << ": Removed edge (" << u << "," << v << ") locally" << endl;
+            continue;
+        }
+        
+        // Create and send the message
+        EdgeMessage msg = {u, v, 0.0f}; // Weight doesn't matter for deletion
+        MPI_Send(&msg, sizeof(EdgeMessage), MPI_BYTE, target_process, DELETE_EDGE_TAG, MPI_COMM_WORLD);
+        
+        cout << "Rank " << rank << ": Sent deletion request for edge (" << u << "," << v << ") to process " << target_process << endl;
+    }
+}
+
+// Function to receive and process all edge update messages
+void receiveAndProcessEdgeUpdates(vector<Vertex>& vertices, vector<pair<int, int>>& local_insertions, 
+                                 vector<pair<int, int>>& local_deletions, const map<int, int>& vertexPartitions, int rank) {
+    bool processing_updates = true;
+    
+    while (processing_updates) {
+        bool processed_message = false;
+        
+        // Check for insertion messages
+        processed_message |= processEdgeInsertions(vertices, local_insertions, vertexPartitions, rank);
+        
+        // Check for deletion messages
+        processed_message |= processEdgeDeletions(vertices, local_deletions, vertexPartitions, rank);
+        
+        // Check for exit loop signal
+        if (checkForExitSignal()) {
+            processing_updates = false;
+            processed_message = true;
+        }
+    }
+}
+
+// Function to perform dynamic graph updates
+void performDynamicGraphUpdates(ParallelDijkstra& dijkstra, vector<Vertex>& vertices, 
+                               map<int, int>& vertexPartitions, int rank, int size) {
+    // Predefined insertions and deletions (similar to the serial version)
+    vector<pair<int, int>> all_insertions = {
+        {6, 11},    // Connects mid-level nodes (original 5-10)
+        {9, 17},    // Creates a shortcut (original 8-16)
+        {4, 8},     // Cross-branch link (original 3-7)
+        {1, 11},    // Root-to-mid-level jump (original 0-10)
+        {13, 25}    // Deep-level connection (original 12-24)
+    };
+    
+    vector<pair<int, int>> all_deletions = {
+        {1, 6},     // Root-level edge removal (original 0-5)
+        {11, 15},   // Chain breaker (original 10-14)
+        {3, 8},     // Alternative path removal (original 2-7)
+        {7, 11},    // Mid-level connection (original 6-10)
+        {17, 21}    // Deep-level removal (original 16-20)
+    };
+
+    // Local collections to track updates on this process
+    vector<pair<int, int>> local_insertions;
+    vector<pair<int, int>> local_deletions;
+    
+    if (rank == 0) {
+        // Process 0 coordinates the dynamic updates
+        cout << "Rank 0: Starting dynamic updates" << endl;
+        
+        // Send edge insertions
+        sendEdgeInsertions(all_insertions, vertices, local_insertions, vertexPartitions, rank, size);
+        
+        // Send edge deletions
+        sendEdgeDeletions(all_deletions, vertices, local_deletions, vertexPartitions, rank, size);
+        
+        // Signal end of updates
+        signalEndOfUpdates(size);
+    }
+    
+    // All processes (excluding rank 0) receive and process messages
+    if (rank != 0)
+        receiveAndProcessEdgeUpdates(vertices, local_insertions, local_deletions, vertexPartitions, rank);
+    
+    // After processing all edge updates, run the SSSP update algorithm
+    cout << "Rank " << rank << ": Updating SSSP with " << local_insertions.size() 
+         << " insertions and " << local_deletions.size() << " deletions" << endl;
+         
+    // Call the updateSSSP function with our collected changes
+    dijkstra.updateSSSP(local_insertions, local_deletions);
+    
+    // Wait for all processes to finish their updates
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     
@@ -922,37 +1367,31 @@ int main(int argc, char** argv) {
     MPI_Barrier(MPI_COMM_WORLD);
     // displayVertexList(listOfVertices);
 
-
     bool result = testPartition(listOfVertices, rank, size);
-
     cout << "Rank " << rank << " has " << (result ? "valid" : "invalid") << " partitions." << endl;
 
     MPI_Barrier(MPI_COMM_WORLD);
-
     cout << "Rank " << rank << " is applying Dijkstra Algorithm " << endl;
 
     ParallelDijkstra dijkstra(rank, size, listOfVertices, vertexPartitions);
     dijkstra.initialize(1); // Initialize with source vertex ID 1
     dijkstra.run();
 
-    // Example edge update - insert a new edge
-    // int u = 120, v = 121;
-    // float weight = 0.5;
-    // bool is_inserted = true;
-    // dijkstra.update_edge(u, v, weight, is_inserted);
+    MPI_Barrier(MPI_COMM_WORLD);
     
-    // // Example edge update - delete an edge
-    // u = 3;
-    // v = 4;
-    // is_inserted = false;
-    // dijkstra.update_edge(u, v, 0.0, is_inserted);
-    
+    // -------- DYNAMIC UPDATES SECTION --------
+    performDynamicGraphUpdates(dijkstra, listOfVertices, vertexPartitions, rank, size);
+    // -------- END DYNAMIC UPDATES SECTION --------
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Print final results
     const auto& distances = dijkstra.get_distances();
     const auto& predecessors = dijkstra.get_predecessors();
 
     // Print local results
     for (const auto& vertex : listOfVertices) {
-        cout << "Vertex " << vertex.id << ": distance = " << distances.at(vertex.id);
+        cout << "Rank " << rank << " - Vertex " << vertex.id << ": distance = " << distances.at(vertex.id);
         if (predecessors.find(vertex.id) != predecessors.end()) {
             cout << ", predecessor = " << predecessors.at(vertex.id);
         }
@@ -960,6 +1399,5 @@ int main(int argc, char** argv) {
     }
     
     MPI_Finalize();
-
     return 0;
 }

@@ -560,6 +560,471 @@ public:
     const unordered_map<int, int>& get_predecessors() const {
         return predecessor;
     }
+
+    void updateSSSP(vector<pair<int, int>> insertions, vector<pair<int, int>> deletions) {
+        // Data structures for affected vertices
+        unordered_map<int, bool> affected;
+        unordered_map<int, bool> affected_del;
+        
+        // Initialize data structures for all known vertices
+        #pragma omp parallel for
+        for (const auto& vertex : vertices) {
+            int vertex_id = vertex.id;
+            #pragma omp critical
+            {
+                affected[vertex_id] = false;
+                affected_del[vertex_id] = false;
+            }
+            
+            // Also initialize for neighbors we know about
+            for (const auto& neighbor : vertex.neighbors) {
+                #pragma omp critical
+                {
+                    affected[neighbor.id] = false;
+                    affected_del[neighbor.id] = false;
+                }
+            }
+        }
+        
+        // Make sure all known vertices from distance map are included
+        #pragma omp parallel for
+        for (auto it = distance.begin(); it != distance.end(); ++it) {
+            int vertex_id = it->first;
+            #pragma omp critical
+            {
+                if (affected.find(vertex_id) == affected.end()) {
+                    affected[vertex_id] = false;
+                    affected_del[vertex_id] = false;
+                }
+            }
+        }
+        
+        // Thread-safe container for updates that need to be sent to other processes
+        vector<pair<int, float>> updates_to_send;
+        mutex updates_mutex;
+        
+        // Process deleted edges first
+        #pragma omp parallel for
+        for (size_t i = 0; i < deletions.size(); ++i) {
+            const auto& edge = deletions[i];
+            int u = edge.first;
+            int v = edge.second;
+            
+            bool should_process = false;
+            bool check_predecessor_v = false;
+            bool check_predecessor_u = false;
+            
+            // Thread-safe check if we know about these vertices
+            #pragma omp critical
+            {
+                should_process = (distance.find(u) != distance.end() && distance.find(v) != distance.end());
+                if (should_process) {
+                    check_predecessor_v = (predecessor.find(v) != predecessor.end());
+                    check_predecessor_u = (predecessor.find(u) != predecessor.end());
+                }
+            }
+            
+            if (!should_process) continue;
+            
+            // Check if edge is in the shortest path tree (using predecessor)
+            bool is_in_tree = false;
+            int affected_vertex = -1;
+            
+            #pragma omp critical
+            {
+                is_in_tree = (check_predecessor_v && predecessor[v] == u) || 
+                             (check_predecessor_u && predecessor[u] == v);
+                
+                if (is_in_tree) {
+                    // Determine which vertex to mark as affected (the one with higher distance)
+                    affected_vertex = (distance[u] > distance[v]) ? u : v;
+                    
+                    // Set distance to infinity and mark as affected
+                    distance[affected_vertex] = numeric_limits<float>::infinity();
+                    affected_del[affected_vertex] = true;
+                    affected[affected_vertex] = true;
+                }
+            }
+            
+            if (is_in_tree) {
+                // Check if this is a local vertex that needs update propagation
+                auto it = vertex_to_partition.find(affected_vertex);
+                if (it != vertex_to_partition.end() && it->second == rank) {
+                    lock_guard<mutex> lock(updates_mutex);
+                    updates_to_send.push_back({affected_vertex, numeric_limits<float>::infinity()});
+                }
+            }
+        }
+        
+        // Process inserted edges with OpenMP
+        #pragma omp parallel for
+        for (size_t i = 0; i < insertions.size(); ++i) {
+            const auto& edge = insertions[i];
+            int u = edge.first;
+            int v = edge.second;
+            
+            bool should_process = false;
+            float dist_u = 0.0f, dist_v = 0.0f;
+            
+            // Thread-safe check if we know about these vertices
+            #pragma omp critical
+            {
+                should_process = (distance.find(u) != distance.end() && distance.find(v) != distance.end());
+                if (should_process) {
+                    dist_u = distance[u];
+                    dist_v = distance[v];
+                }
+            }
+            
+            if (!should_process) continue;
+            
+            // Find the vertex with lower distance (x) and higher distance (y)
+            int x = (dist_u > dist_v) ? v : u;
+            int y = (dist_u > dist_v) ? u : v;
+            
+            // Find the weight of the edge from x to y
+            float weight = 0.0f;
+            bool weight_found = false;
+            
+            // Try to find vertex x in our local vertices
+            for (const auto& vertex : vertices) {
+                if (vertex.id == x) {
+                    // Look for neighbor y
+                    for (size_t j = 0; j < vertex.neighbors.size(); ++j) {
+                        if (vertex.neighbors[j].id == y) {
+                            weight = vertex.weights[j];
+                            weight_found = true;
+                            break;
+                        }
+                    }
+                    if (weight_found) break;
+                }
+            }
+            
+            // If weight is 0, we might not have found the edge locally
+            if (!weight_found) {
+                // For simplicity, we'll use MPI to gather the weight from other processes
+                // This is a simplified approach - a more optimized version would batch these requests
+                float local_weight = weight;
+                
+                // We need to synchronize threads before MPI communication
+                #pragma omp barrier
+                #pragma omp single
+                {
+                    MPI_Allreduce(&local_weight, &weight, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+                }
+                
+                // If still 0, this edge might not exist in any process
+                if (weight == 0.0f) continue;
+            }
+            
+            bool update_needed = false;
+            float x_dist = 0.0f, y_dist = 0.0f;
+            
+            #pragma omp critical
+            {
+                x_dist = distance[x];
+                y_dist = distance[y];
+                
+                // Check if the new edge provides a shorter path
+                if (y_dist > x_dist + weight) {
+                    distance[y] = x_dist + weight;
+                    predecessor[y] = x;
+                    affected[y] = true;
+                    update_needed = true;
+                }
+            }
+            
+            if (update_needed) {
+                // If this is a local vertex, we'll need to propagate this change
+                auto it = vertex_to_partition.find(y);
+                if (it != vertex_to_partition.end() && it->second == rank) {
+                    lock_guard<mutex> lock(updates_mutex);
+                    updates_to_send.push_back({y, distance[y]});
+                }
+            }
+        }
+        
+        // Send initial updates to other processes (outside of parallel region)
+        for (const auto& [vertex_id, new_dist] : updates_to_send) {
+            for (int p = 0; p < world_size; ++p) {
+                if (p != rank) {
+                    send_distance_update(vertex_id, new_dist);
+                }
+            }
+        }
+        updates_to_send.clear();
+        
+        // Wait for all pending communications to complete
+        if (!pending_requests.empty()) {
+            MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+            pending_requests.clear();
+        }
+        
+        // Process any incoming messages
+        process_incoming_messages();
+        
+        // Algorithm 3: Update Affected Vertices in parallel
+        // First handle vertices affected by deletions
+        bool global_has_affected_del = true;
+        
+        while (global_has_affected_del) {
+            // Collect locally affected vertices
+            vector<int> affected_vertices_del;
+            
+            #pragma omp parallel
+            {
+                vector<int> thread_affected;
+                
+                #pragma omp for
+                for (auto it = affected_del.begin(); it != affected_del.end(); ++it) {
+                    if (it->second) {
+                        thread_affected.push_back(it->first);
+                        it->second = false; // Reset for next iteration
+                    }
+                }
+                
+                #pragma omp critical
+                {
+                    affected_vertices_del.insert(affected_vertices_del.end(), 
+                                              thread_affected.begin(), 
+                                              thread_affected.end());
+                }
+            }
+            
+            bool local_has_affected_del = !affected_vertices_del.empty();
+            
+            // Check if any process has affected vertices
+            MPI_Allreduce(&local_has_affected_del, &global_has_affected_del, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD);
+            
+            if (!global_has_affected_del) break;
+            
+            // Process each locally affected vertex
+            #pragma omp parallel
+            {
+                vector<pair<int, float>> thread_updates;
+                
+                #pragma omp for
+                for (size_t i = 0; i < affected_vertices_del.size(); ++i) {
+                    int vertex_id = affected_vertices_del[i];
+                    
+                    // Find all children of vertex_id in the SSSP tree
+                    vector<int> affected_children;
+                    
+                    #pragma omp critical
+                    {
+                        for (const auto& [child_id, pred] : predecessor) {
+                            if (pred == vertex_id) {
+                                affected_children.push_back(child_id);
+                            }
+                        }
+                    }
+                    
+                    // Process each affected child
+                    for (int child_id : affected_children) {
+                        #pragma omp critical
+                        {
+                            distance[child_id] = numeric_limits<float>::infinity();
+                            affected_del[child_id] = true;
+                            affected[child_id] = true;
+                        }
+                        
+                        thread_updates.push_back({child_id, numeric_limits<float>::infinity()});
+                    }
+                }
+                
+                #pragma omp critical
+                {
+                    updates_to_send.insert(updates_to_send.end(), 
+                                         thread_updates.begin(), 
+                                         thread_updates.end());
+                }
+            }
+            
+            // Send updates to other processes (outside parallel region)
+            for (const auto& [vertex_id, new_dist] : updates_to_send) {
+                for (int p = 0; p < world_size; ++p) {
+                    if (p != rank) {
+                        send_distance_update(vertex_id, new_dist);
+                    }
+                }
+            }
+            updates_to_send.clear();
+            
+            // Wait for all pending communications to complete
+            if (!pending_requests.empty()) {
+                MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+                pending_requests.clear();
+            }
+            
+            // Process any incoming messages
+            process_incoming_messages();
+        }
+        
+        // Now handle all affected vertices
+        bool global_has_affected = true;
+        
+        while (global_has_affected) {
+            // Collect locally affected vertices
+            vector<int> affected_vertices;
+            
+            #pragma omp parallel
+            {
+                vector<int> thread_affected;
+                
+                #pragma omp for
+                for (auto it = affected.begin(); it != affected.end(); ++it) {
+                    if (it->second) {
+                        thread_affected.push_back(it->first);
+                        it->second = false; // Reset for next iteration
+                    }
+                }
+                
+                #pragma omp critical
+                {
+                    affected_vertices.insert(affected_vertices.end(), 
+                                          thread_affected.begin(), 
+                                          thread_affected.end());
+                }
+            }
+            
+            bool local_has_affected = !affected_vertices.empty();
+            
+            // Check if any process has affected vertices
+            MPI_Allreduce(&local_has_affected, &global_has_affected, 1, MPI_C_BOOL, MPI_LOR, MPI_COMM_WORLD);
+            
+            if (!global_has_affected) break;
+            
+            // Use OpenMP to process affected vertices in parallel
+            #pragma omp parallel
+            {
+                vector<pair<int, float>> thread_updates;
+                
+                #pragma omp for schedule(dynamic)
+                for (size_t i = 0; i < affected_vertices.size(); ++i) {
+                    int vertex_id = affected_vertices[i];
+                    
+                    // Find the vertex in our local list
+                    Vertex* vertex_ptr = nullptr;
+                    for (auto& v : vertices) {
+                        if (v.id == vertex_id) {
+                            vertex_ptr = &v;
+                            break;
+                        }
+                    }
+                    
+                    // Skip if we don't have this vertex locally
+                    if (!vertex_ptr) continue;
+                    
+                    float vertex_dist;
+                    #pragma omp critical
+                    {
+                        vertex_dist = distance[vertex_id];
+                    }
+                    
+                    // Process all neighbors
+                    for (size_t j = 0; j < vertex_ptr->neighbors.size(); ++j) {
+                        int neighbor_id = vertex_ptr->neighbors[j].id;
+                        float weight = vertex_ptr->weights[j];
+                        
+                        float neighbor_dist;
+                        bool update_needed = false;
+                        bool update_type = false; // false for neighbor update, true for vertex update
+                        
+                        #pragma omp critical
+                        {
+                            neighbor_dist = distance[neighbor_id];
+                            
+                            // Check if we can improve the path to neighbor through vertex_id
+                            if (neighbor_dist > vertex_dist + weight) {
+                                distance[neighbor_id] = vertex_dist + weight;
+                                predecessor[neighbor_id] = vertex_id;
+                                affected[neighbor_id] = true;
+                                update_needed = true;
+                                update_type = false;
+                            }
+                            // Or vice versa
+                            else if (vertex_dist > neighbor_dist + weight) {
+                                distance[vertex_id] = neighbor_dist + weight;
+                                predecessor[vertex_id] = neighbor_id;
+                                affected[vertex_id] = true;
+                                update_needed = true;
+                                update_type = true;
+                            }
+                        }
+                        
+                        if (update_needed) {
+                            int updated_id = update_type ? vertex_id : neighbor_id;
+                            float updated_dist;
+                            
+                            #pragma omp critical
+                            {
+                                updated_dist = distance[updated_id];
+                            }
+                            
+                            // Check if this is a vertex that needs update propagation
+                            auto it = vertex_to_partition.find(updated_id);
+                            if (it != vertex_to_partition.end() && it->second == rank) {
+                                thread_updates.push_back({updated_id, updated_dist});
+                            }
+                        }
+                    }
+                }
+                
+                #pragma omp critical
+                {
+                    updates_to_send.insert(updates_to_send.end(), 
+                                         thread_updates.begin(), 
+                                         thread_updates.end());
+                }
+            }
+            
+            // Send updates to other processes (outside parallel region)
+            for (const auto& [vertex_id, new_dist] : updates_to_send) {
+                for (int p = 0; p < world_size; ++p) {
+                    if (p != rank) {
+                        send_distance_update(vertex_id, new_dist);
+                    }
+                }
+            }
+            updates_to_send.clear();
+            
+            // Wait for all pending communications to complete
+            if (!pending_requests.empty()) {
+                MPI_Waitall(pending_requests.size(), pending_requests.data(), MPI_STATUSES_IGNORE);
+                pending_requests.clear();
+            }
+            
+            // Process any incoming messages
+            process_incoming_messages();
+        }
+        
+        // Ensure source vertex has distance 0 and no predecessor
+        int thread_count = omp_get_max_threads();
+        vector<int> potential_sources(thread_count, -1);
+        
+        #pragma omp parallel
+        {
+            int thread_id = omp_get_thread_num();
+            
+            #pragma omp for
+            for (auto it = distance.begin(); it != distance.end(); ++it) {
+                if (it->second == 0.0f) {
+                    potential_sources[thread_id] = it->first;
+                }
+            }
+        }
+        
+        for (int src : potential_sources) {
+            if (src != -1) {
+                predecessor[src] = -1;
+                break;
+            }
+        }
+        
+        // Final global synchronization to ensure all processes have consistent state
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
 };
 
 map<int, int> buildVertexPartition(vector<string>& lines) {
