@@ -16,8 +16,10 @@
 #include <mutex>
 #include <algorithm>
 
+#define NUM_THREADS 128
 
 using namespace std;
+
 
 struct Vertex {
     int id;
@@ -64,7 +66,7 @@ public:
         adjList.clear();
         numEdges = 0;
     
-        #pragma omp parallel for reduction(+:numEdges) schedule(dynamic, 1024)
+        #pragma omp parallel for reduction(+:numEdges) schedule(dynamic, NUM_THREADS)
         for (size_t i = 0; i < lines.size(); i++) {
             int u, v;
             istringstream iss(lines[i]);
@@ -303,7 +305,7 @@ private:
         
         // Process collected messages in parallel
         if (!message_buffers.empty()) {
-            #pragma omp parallel for schedule(dynamic, 16)
+            #pragma omp parallel for schedule(dynamic, NUM_THREADS)
             for (size_t i = 0; i < message_buffers.size(); i++) {
                 const auto& buffer = message_buffers[i];
                 
@@ -1202,7 +1204,6 @@ struct EdgeMessage {
 };
 
 // Helper function to add an edge to a vertex in the local vertex list
-// Helper function to add an edge to a vertex in the local vertex list
 void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, float weight, 
                     const map<int, int>& vertexPartitions, int myRank) {
     // First, handle the source vertex which we know belongs to this process
@@ -1238,7 +1239,7 @@ void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, flo
                         if (vertexPartitions.find(target_id) != vertexPartitions.end()) {
                             target_vertex.partitionId = vertexPartitions.at(target_id);
                         } else {
-                            target_vertex.partitionId = -1; // Unknown partition
+                            target_vertex.partitionId = myRank;
                         }
                         
                         vertices[i].neighbors.push_back(target_vertex);
@@ -1489,7 +1490,7 @@ void sendEdgeInsertions(const vector<pair<int, int>>& insertions, vector<Vertex>
     {
         vector<pair<int, int>> thread_local_insertions;
         
-        #pragma omp for schedule(dynamic)
+        #pragma omp for schedule(dynamic, NUM_THREADS)
         for (size_t i = 0; i < insertions.size(); i++) {
             int u = insertions[i].first;
             int v = insertions[i].second;
@@ -1541,7 +1542,7 @@ void sendEdgeDeletions(const vector<pair<int, int>>& deletions, vector<Vertex>& 
     {
         vector<pair<int, int>> thread_local_deletions;
         
-        #pragma omp for schedule(dynamic)
+        #pragma omp for schedule(dynamic, NUM_THREADS)
         for (size_t i = 0; i < deletions.size(); i++) {
             int u = deletions[i].first;
             int v = deletions[i].second;

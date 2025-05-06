@@ -964,7 +964,7 @@ void addEdgeToVertex(vector<Vertex>& vertices, int source_id, int target_id, flo
                 if (vertexPartitions.find(target_id) != vertexPartitions.end()) {
                     target_vertex.partitionId = vertexPartitions.at(target_id);
                 } else {
-                    target_vertex.partitionId = -1; // Unknown partition
+                    target_vertex.partitionId = myRank; // Unknown partition
                 }
                 
                 vertex.neighbors.push_back(target_vertex);
